@@ -1,6 +1,6 @@
 module FunctionProperties
 
-using Cassette
+using Cassette, DiffRules
 
 const printbranch = false
 
