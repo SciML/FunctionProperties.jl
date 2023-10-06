@@ -1,6 +1,6 @@
 [deps]
-FunctionProperties = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+FunctionProperties = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
 
 [compat]
-Documenter = "0.27"
+Documenter = "0.27, 1"
