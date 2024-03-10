@@ -12,7 +12,10 @@ end
 
 f_branch() = true ? 1 : 0
 @test FunctionProperties.hasbranching(f_branch)
-FunctionProperties.Cassette.overdub(::FunctionProperties.HasBranchingCtx, ::typeof(f_branch), x...) = f_branch(x...)
+function FunctionProperties.Cassette.overdub(
+        ::FunctionProperties.HasBranchingCtx, ::typeof(f_branch), x...)
+    f_branch(x...)
+end
 @test !FunctionProperties.hasbranching(f_branch)
 
 # Test simple mutating functions
@@ -21,4 +24,4 @@ function f(dx, x)
 end
 x = zeros(1)
 dx = zeros(1)
-@test !FunctionProperties.hasbranching(f,dx,x)
+@test !FunctionProperties.hasbranching(f, dx, x)
