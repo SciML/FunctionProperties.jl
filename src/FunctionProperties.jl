@@ -108,6 +108,7 @@ function Cassette.overdub(::HasBranchingCtx, ::typeof(Base.literal_pow), x...)
     Base.literal_pow(x...)
 end
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.getindex), x...) = Base.getindex(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.setindex!), x...) = Base.setindex!(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Core.Typeof), x...) = Core.Typeof(x...)
 function Cassette.overdub(::HasBranchingCtx, ::Type{Base.OneTo{T}},
                           stop) where {T <: Integer}
