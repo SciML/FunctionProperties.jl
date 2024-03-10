@@ -12,7 +12,7 @@ makedocs(sitename = "FunctionProperties.jl",
          authors = "Chris Rackauckas",
          modules = [FunctionProperties],
          clean = true, doctest = false, linkcheck = true,
-         strict = [
+         warnonly = [
              :doctest,
              :linkcheck,
              :parse_error,
