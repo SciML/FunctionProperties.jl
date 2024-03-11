@@ -111,6 +111,16 @@ end
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.getindex), x...) = Base.getindex(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.setindex!), x...) = Base.setindex!(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Core.Typeof), x...) = Core.Typeof(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.vec), x...) = Base.vec(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.vect), x...) = Base.vect(x...)
+
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.vcat), x...) = Base.vcat(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.hcat), x...) = Base.hcat(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.hvcat), x...) = Base.hvcat(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.cat), x...) = Base.cat(x...)
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.stack), x...) = Base.stack(x...)
+
+Cassette.overdub(::HasBranchingCtx, ::typeof(Base.Broadcast.broadcasted), x...) = Base.Broadcast.broadcasted(x...)
 function Cassette.overdub(::HasBranchingCtx, ::Type{Base.OneTo{T}},
         stop) where {T <: Integer}
     Base.OneTo{T}(stop)
