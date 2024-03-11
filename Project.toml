@@ -1,7 +1,7 @@
 name = "FunctionProperties"
 uuid = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
 authors = ["SciML"]
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 Cassette = "7057c7e9-c182-5462-911a-8362d720325c"
@@ -10,7 +10,7 @@ DiffRules = "b552c78f-8df3-52c6-915a-8e097449b14b"
 [compat]
 Cassette = "0.3.6"
 DiffRules = "1.15"
-julia = "1.6"
+julia = "1.10"
 
 [extras]
 ComponentArrays = "b0b7db55-cfe3-40fc-9ded-d10e2dbeff66"
