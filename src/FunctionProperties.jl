@@ -120,7 +120,9 @@ Cassette.overdub(::HasBranchingCtx, ::typeof(Base.hvcat), x...) = Base.hvcat(x..
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.cat), x...) = Base.cat(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.stack), x...) = Base.stack(x...)
 
-Cassette.overdub(::HasBranchingCtx, ::typeof(Base.Broadcast.broadcasted), x...) = Base.Broadcast.broadcasted(x...)
+function Cassette.overdub(::HasBranchingCtx, ::typeof(Base.Broadcast.broadcasted), x...)
+    Base.Broadcast.broadcasted(x...)
+end
 function Cassette.overdub(::HasBranchingCtx, ::Type{Base.OneTo{T}},
         stop) where {T <: Integer}
     Base.OneTo{T}(stop)
