@@ -53,7 +53,7 @@ end
 @test !FunctionProperties.hasbranching(f, t, p, st)
 
 function f2(x, ps, st)
-    Lux.__apply_activation(identity, ps.weight * x .+ vec(ps.bias)), st
+    Lux.apply_activation(identity, ps.weight * x .+ vec(ps.bias)), st
 end
 @test !FunctionProperties.hasbranching(f2, t, p, st)
 @test !FunctionProperties.hasbranching(ann, t, p, st)
