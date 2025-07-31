@@ -32,7 +32,8 @@ function _pass(::Type{<:HasBranchingCtx}, reflection::Cassette.Reflection)
         printbranch && println("GotoIfNot detected in $(reflection.method)\nir = $ir\n")
         Cassette.insert_statements!(ir.code, ir.codelocs,
             (stmt, i) -> i == 1 ? 3 : nothing,
-            (stmt, i) -> Any[
+            (stmt,
+                i) -> Any[
                 Expr(:call,
                     Expr(:nooverdub,
                         GlobalRef(Base, :getfield)),
@@ -46,7 +47,8 @@ function _pass(::Type{<:HasBranchingCtx}, reflection::Cassette.Reflection)
                 stmt])
         Cassette.insert_statements!(ir.code, ir.codelocs,
             (stmt, i) -> i > 2 && isa(stmt, Expr) ? 1 : nothing,
-            (stmt, i) -> begin
+            (stmt,
+                i) -> begin
                 callstmt = Meta.isexpr(stmt, :(=)) ? stmt.args[2] :
                            stmt
                 Meta.isexpr(stmt, :call) ||
