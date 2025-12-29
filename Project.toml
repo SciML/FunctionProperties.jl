@@ -10,14 +10,16 @@ DiffRules = "b552c78f-8df3-52c6-915a-8e097449b14b"
 [compat]
 Cassette = "0.3.6"
 DiffRules = "1.15"
+ExplicitImports = "1.9"
 julia = "1.10"
 
 [extras]
 ComponentArrays = "b0b7db55-cfe3-40fc-9ded-d10e2dbeff66"
+ExplicitImports = "7d51a73a-1435-4ff3-83d9-f097790105c7"
 Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SafeTestsets = "1bc83da4-3b8d-516f-aca4-4fe02f6d838f"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "SafeTestsets", "ComponentArrays", "Lux", "Random"]
+test = ["Test", "SafeTestsets", "ComponentArrays", "Lux", "Random", "ExplicitImports"]
