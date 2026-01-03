@@ -1,7 +1,8 @@
 module FunctionProperties
 
-using Cassette, DiffRules
-using Core: CodeInfo, SlotNumber, SSAValue, ReturnNode, GotoIfNot
+using Cassette: Cassette
+using DiffRules: DiffRules
+using Core: SSAValue, GotoIfNot
 
 const printbranch = false
 

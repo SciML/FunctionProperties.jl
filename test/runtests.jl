@@ -1,4 +1,9 @@
-using FunctionProperties, Test
+using FunctionProperties
+using Test
+
+@testset "Explicit Imports" begin
+    include("explicit_imports.jl")
+end
 
 @test hasbranching(1, 2) do x, y
     (x < 0 ? -x : x) + exp(y)
