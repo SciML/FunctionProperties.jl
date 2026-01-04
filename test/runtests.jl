@@ -13,14 +13,15 @@ end
 f_branch() = true ? 1 : 0
 @test FunctionProperties.hasbranching(f_branch)
 function FunctionProperties.Cassette.overdub(
-        ::FunctionProperties.HasBranchingCtx, ::typeof(f_branch), x...)
-    f_branch(x...)
+        ::FunctionProperties.HasBranchingCtx, ::typeof(f_branch), x...
+    )
+    return f_branch(x...)
 end
 @test !FunctionProperties.hasbranching(f_branch)
 
 # Test simple mutating functions
 function f(dx, x)
-    @inbounds dx[1] = x[1]
+    return @inbounds dx[1] = x[1]
 end
 x = zeros(1)
 dx = zeros(1)
@@ -28,7 +29,7 @@ dx = zeros(1)
 
 # Test broadcast
 function f(x)
-    cos.(x .+ x .* x)
+    return cos.(x .+ x .* x)
 end
 x = [1.0]
 @test !FunctionProperties.hasbranching(f, x)
@@ -43,17 +44,17 @@ x0 = [-4.0f0, 0.0f0]
 t = [0.0]
 
 function f(x, ps, st)
-    ps.weight * x
+    return ps.weight * x
 end
 @test !FunctionProperties.hasbranching(f, t, p, st)
 
 function f(x, ps, st)
-    x .+ x
+    return x .+ x
 end
 @test !FunctionProperties.hasbranching(f, t, p, st)
 
 function f2(x, ps, st)
-    Lux.apply_activation(identity, ps.weight * x .+ vec(ps.bias)), st
+    return Lux.apply_activation(identity, ps.weight * x .+ vec(ps.bias)), st
 end
 @test !FunctionProperties.hasbranching(f2, t, p, st)
 @test !FunctionProperties.hasbranching(ann, t, p, st)
@@ -68,7 +69,7 @@ p = ComponentArray(ps)
 function dxdt_(dx, x, p, t)
     x1, x2 = x
     dx[1] = x[2] + first(ann(x, p, st))[1]
-    dx[2] = first(ann([t, t], p, st))[1]
+    return dx[2] = first(ann([t, t], p, st))[1]
 end
 x0 = [-4.0f0, 0.0f0]
 ts = Float32.(collect(0.0:0.01:tspan[2]))
