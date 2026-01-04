@@ -19,9 +19,11 @@ for (mod, f, n) in DiffRules.diffrules(; filter_modules = nothing)
     if !(isdefined(@__MODULE__, mod) && isdefined(getfield(@__MODULE__, mod), f))
         continue  # Skip rules for methods not defined in the current scope
     end
-    @eval function Cassette.overdub(::HasBranchingCtx, f::Core.Typeof($mod.$f),
-            x::Vararg{Any, $n})
-        f(x...)
+    @eval function Cassette.overdub(
+            ::HasBranchingCtx, f::Core.Typeof($mod.$f),
+            x::Vararg{Any, $n}
+        )
+        return f(x...)
     end
 end
 
@@ -30,36 +32,57 @@ function _pass(::Type{<:HasBranchingCtx}, reflection::Cassette.Reflection)
 
     if any(x -> isa(x, GotoIfNot), ir.code)
         printbranch && println("GotoIfNot detected in $(reflection.method)\nir = $ir\n")
-        Cassette.insert_statements!(ir.code, ir.codelocs,
+        Cassette.insert_statements!(
+            ir.code, ir.codelocs,
             (stmt, i) -> i == 1 ? 3 : nothing,
-            (stmt,
-                i) -> Any[
-                Expr(:call,
-                    Expr(:nooverdub,
-                        GlobalRef(Base, :getfield)),
+            (
+                stmt,
+                i,
+            ) -> Any[
+                Expr(
+                    :call,
+                    Expr(
+                        :nooverdub,
+                        GlobalRef(Base, :getfield)
+                    ),
                     Expr(:contextslot),
-                    QuoteNode(:metadata)),
-                Expr(:call,
-                    Expr(:nooverdub,
-                        GlobalRef(Base, :setindex!)),
+                    QuoteNode(:metadata)
+                ),
+                Expr(
+                    :call,
+                    Expr(
+                        :nooverdub,
+                        GlobalRef(Base, :setindex!)
+                    ),
                     SSAValue(1), true,
-                    QuoteNode(:has_branching)),
-                stmt])
-        Cassette.insert_statements!(ir.code, ir.codelocs,
+                    QuoteNode(:has_branching)
+                ),
+                stmt,
+            ]
+        )
+        Cassette.insert_statements!(
+            ir.code, ir.codelocs,
             (stmt, i) -> i > 2 && isa(stmt, Expr) ? 1 : nothing,
-            (stmt,
-                i) -> begin
+            (
+                stmt,
+                i,
+            ) -> begin
                 callstmt = Meta.isexpr(stmt, :(=)) ? stmt.args[2] :
-                           stmt
+                    stmt
                 Meta.isexpr(stmt, :call) ||
                     Meta.isexpr(stmt, :invoke) || return Any[stmt]
-                callstmt = Expr(callstmt.head,
+                callstmt = Expr(
+                    callstmt.head,
                     Expr(:nooverdub, callstmt.args[1]),
-                    callstmt.args[2:end]...)
-                return Any[Meta.isexpr(stmt, :(=)) ?
-                           Expr(:(=), stmt.args[1], callstmt) :
-                           callstmt]
-            end)
+                    callstmt.args[2:end]...
+                )
+                return Any[
+                    Meta.isexpr(stmt, :(=)) ?
+                        Expr(:(=), stmt.args[1], callstmt) :
+                        callstmt,
+                ]
+            end
+        )
     end
     return ir
 end
@@ -105,10 +128,10 @@ end
 Cassette.overdub(::HasBranchingCtx, ::typeof(+), x...) = +(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(*), x...) = *(x...)
 function Cassette.overdub(::HasBranchingCtx, ::typeof(Base.materialize), x...)
-    Base.materialize(x...)
+    return Base.materialize(x...)
 end
 function Cassette.overdub(::HasBranchingCtx, ::typeof(Base.literal_pow), x...)
-    Base.literal_pow(x...)
+    return Base.literal_pow(x...)
 end
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.getindex), x...) = Base.getindex(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.setindex!), x...) = Base.setindex!(x...)
@@ -123,11 +146,13 @@ Cassette.overdub(::HasBranchingCtx, ::typeof(Base.cat), x...) = Base.cat(x...)
 Cassette.overdub(::HasBranchingCtx, ::typeof(Base.stack), x...) = Base.stack(x...)
 
 function Cassette.overdub(::HasBranchingCtx, ::typeof(Base.Broadcast.broadcasted), x...)
-    Base.Broadcast.broadcasted(x...)
+    return Base.Broadcast.broadcasted(x...)
 end
-function Cassette.overdub(::HasBranchingCtx, ::Type{Base.OneTo{T}},
-        stop) where {T <: Integer}
-    Base.OneTo{T}(stop)
+function Cassette.overdub(
+        ::HasBranchingCtx, ::Type{Base.OneTo{T}},
+        stop
+    ) where {T <: Integer}
+    return Base.OneTo{T}(stop)
 end
 
 export hasbranching
