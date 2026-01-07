@@ -68,19 +68,21 @@ function _pass(::Type{<:HasBranchingCtx}, reflection::Cassette.Reflection)
                 i,
             ) -> begin
                 callstmt = Meta.isexpr(stmt, :(=)) ? stmt.args[2] :
-                    stmt
-                Meta.isexpr(stmt, :call) ||
-                    Meta.isexpr(stmt, :invoke) || return Any[stmt]
-                callstmt = Expr(
-                    callstmt.head,
-                    Expr(:nooverdub, callstmt.args[1]),
-                    callstmt.args[2:end]...
-                )
-                return Any[
-                    Meta.isexpr(stmt, :(=)) ?
-                        Expr(:(=), stmt.args[1], callstmt) :
-                        callstmt,
-                ]
+                           stmt
+                Meta.isexpr(callstmt, :call) ||
+                    Meta.isexpr(callstmt, :invoke) || return Any[stmt]
+                # Only wrap with :nooverdub if the callee is a GlobalRef.
+                # In Julia 1.11+, function calls may have SSAValue as the
+                # callee when the function was loaded into an SSA slot first.
+                # Wrapping SSAValue with :nooverdub is incorrect.
+                callee = callstmt.args[1]
+                if callee isa GlobalRef
+                    callee = Expr(:nooverdub, callee)
+                end
+                callstmt = Expr(callstmt.head, callee, callstmt.args[2:end]...)
+                return Any[Meta.isexpr(stmt, :(=)) ?
+                           Expr(:(=), stmt.args[1], callstmt) :
+                           callstmt]
             end
         )
     end
