@@ -12,7 +12,7 @@ on:
       - 'docs/**'
 jobs:
   downgrade:
-    if: false
+    # Runs strict (allow_reresolve=false); expected RED until modern Lux/AD stack resolves (test reworked in #49)
     name: "Downgrade"
     uses: "SciML/.github/.github/workflows/downgrade.yml@v1"
     with:
