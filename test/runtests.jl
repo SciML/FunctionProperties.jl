@@ -1,4 +1,17 @@
-using FunctionProperties, Test
+using Test
+
+const GROUP = get(ENV, "GROUP", "All")
+
+if GROUP == "QA"
+    using Pkg
+    Pkg.activate(joinpath(@__DIR__, "qa"))
+    Pkg.instantiate()
+    include(joinpath(@__DIR__, "qa", "qa.jl"))
+end
+
+if GROUP in ("All", "Core")
+
+using FunctionProperties
 
 @test hasbranching(1, 2) do x, y
     (x < 0 ? -x : x) + exp(y)
@@ -88,3 +101,5 @@ end
 x0 = [-4.0f0, 0.0f0]
 ts = Float32.(collect(0.0:0.01:tspan[2]))
 @test !FunctionProperties.hasbranching(dxdt_, copy(x0), x0, p, tspan[1])
+
+end
