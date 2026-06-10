@@ -1,4 +1,17 @@
-using FunctionProperties, Test
+using Test
+using FunctionProperties
+using ComponentArrays, Random
+
+const GROUP = get(ENV, "GROUP", "All")
+
+if GROUP == "QA"
+    using Pkg
+    Pkg.activate(joinpath(@__DIR__, "qa"))
+    Pkg.instantiate()
+    include(joinpath(@__DIR__, "qa", "qa.jl"))
+end
+
+if GROUP in ("All", "Core")
 
 @test hasbranching(1, 2) do x, y
     (x < 0 ? -x : x) + exp(y)
@@ -43,7 +56,6 @@ x = [1.0]
 # modern Lux layer dispatch routes through device-detection / type-introspection helpers that contain
 # genuine (but value-independent, compile-time) `GotoIfNot` branches, which this syntactic IR scan
 # cannot distinguish from value-dependent branches (SciML/FunctionProperties.jl#46).
-using ComponentArrays, Random
 rng = Random.default_rng()
 W = randn(rng, Float32, 1, 1)
 b = randn(rng, Float32, 1)
@@ -88,3 +100,5 @@ end
 x0 = [-4.0f0, 0.0f0]
 ts = Float32.(collect(0.0:0.01:tspan[2]))
 @test !FunctionProperties.hasbranching(dxdt_, copy(x0), x0, p, tspan[1])
+
+end
