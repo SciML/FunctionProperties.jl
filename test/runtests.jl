@@ -1,4 +1,6 @@
 using Test
+using FunctionProperties
+using ComponentArrays, Random
 
 const GROUP = get(ENV, "GROUP", "All")
 
@@ -10,8 +12,6 @@ if GROUP == "QA"
 end
 
 if GROUP in ("All", "Core")
-
-using FunctionProperties
 
 @test hasbranching(1, 2) do x, y
     (x < 0 ? -x : x) + exp(y)
@@ -56,7 +56,6 @@ x = [1.0]
 # modern Lux layer dispatch routes through device-detection / type-introspection helpers that contain
 # genuine (but value-independent, compile-time) `GotoIfNot` branches, which this syntactic IR scan
 # cannot distinguish from value-dependent branches (SciML/FunctionProperties.jl#46).
-using ComponentArrays, Random
 rng = Random.default_rng()
 W = randn(rng, Float32, 1, 1)
 b = randn(rng, Float32, 1)
