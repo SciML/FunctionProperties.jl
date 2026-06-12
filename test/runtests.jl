@@ -21,15 +21,11 @@ end
     ifelse(x < 0, -x, x) + exp(y)
 end
 
-# Test overloading
+# Test overloading via is_leaf
 
 f_branch() = true ? 1 : 0
 @test FunctionProperties.hasbranching(f_branch)
-function FunctionProperties.Cassette.overdub(
-        ::FunctionProperties.HasBranchingCtx, ::typeof(f_branch), x...
-    )
-    return f_branch(x...)
-end
+FunctionProperties.is_leaf(::typeof(f_branch)) = true
 @test !FunctionProperties.hasbranching(f_branch)
 
 # Test simple mutating functions
