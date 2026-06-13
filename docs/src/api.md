@@ -2,4 +2,5 @@
 
 ```@docs
 hasbranching
+is_leaf
 ```

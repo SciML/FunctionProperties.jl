@@ -28,11 +28,16 @@ end # true
 end # false
 ```
 
-## This package uses Cassette internally?
+## How does this package work internally?
 
-Yes, because this is how it's currently known how to be done. If you have an alternative
-implementation which uses the undocumented compiler plugins interface, we would happily
-accept the PR!
+`hasbranching` inspects the type-inferred but unoptimized IR of the function
+(via `code_typed(f, argtypes; optimize = false)`) and checks for `GotoIfNot`
+nodes, which represent value-dependent conditional branches. Constructs that do
+not introduce data-dependent control flow, such as `ifelse`, do not produce
+`GotoIfNot` nodes and are therefore reported as branch-free.
+
+If a function produces a false positive because its branches are known to
+resolve at compile time, opt it out with [`is_leaf`](@ref).
 
 ## Contributing
 
