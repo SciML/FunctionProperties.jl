@@ -1,4 +1,4 @@
-using FunctionProperties, Aqua, JET, ExplicitImports, SciMLTesting
+using SciMLTesting, FunctionProperties, JET, Test
 
 # `hasbranching` is a compiler-introspection utility: it `code_typed`s `f` and scans the
 # resulting IR for `Core.GotoIfNot` nodes, and builds the dispatch signature with
@@ -7,9 +7,7 @@ using FunctionProperties, Aqua, JET, ExplicitImports, SciMLTesting
 # is itself non-public), so these two accesses are ignored in the public-API checks.
 run_qa(
     FunctionProperties;
-    Aqua = Aqua,
-    JET = JET, jet = true,
-    ExplicitImports = ExplicitImports, explicit_imports = true,
+    explicit_imports = true,
     ei_kwargs = (;
         all_explicit_imports_are_public = (; ignore = (:GotoIfNot,)),
         all_qualified_accesses_are_public = (; ignore = (:Typeof,)),
