@@ -1,3 +1,6 @@
+# Aqua is otherwise a transitive dep of SciMLTesting, but it is kept here as a
+# direct dep because Aqua's `Method ambiguity` check spawns a fresh subprocess
+# that `using Aqua` against this env's load path, where only direct deps resolve.
 [deps]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 FunctionProperties = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
@@ -13,6 +16,6 @@ FunctionProperties = {path = "../.."}
 Aqua = "0.8"
 JET = "0.9,0.10,0.11"
 SafeTestsets = "0.0.1, 0.1"
-SciMLTesting = "1"
+SciMLTesting = "1.5"
 Test = "1"
 julia = "1.10"

@@ -1,14 +1,15 @@
-using FunctionProperties, Aqua, JET, Test
+using SciMLTesting, FunctionProperties, JET, Test
 
-@testset "Aqua" begin
-    # deps_compat disabled: missing [compat] for the Pkg test extra.
-    # Tracked in https://github.com/SciML/FunctionProperties.jl/issues/54
-    Aqua.test_all(FunctionProperties; deps_compat = false)
-    @test_broken false  # Aqua deps_compat: missing compat for Pkg extra — tracked in https://github.com/SciML/FunctionProperties.jl/issues/54
-end
-
-@testset "JET" begin
-    # JET finds `Cassette.m is not defined` in overdub(::typeof(nameof), ...).
-    # Tracked in https://github.com/SciML/FunctionProperties.jl/issues/54
-    @test_broken false  # JET: Cassette.m is not defined in overdub(::typeof(nameof), ...) — tracked in https://github.com/SciML/FunctionProperties.jl/issues/54
-end
+# `hasbranching` is a compiler-introspection utility: it `code_typed`s `f` and scans the
+# resulting IR for `Core.GotoIfNot` nodes, and builds the dispatch signature with
+# `Core.Typeof`. Both names are internal to `Core` with no public equivalent
+# (`typeof` differs from `Core.Typeof` on type-valued arguments, and `Base.typesof`
+# is itself non-public), so these two accesses are ignored in the public-API checks.
+run_qa(
+    FunctionProperties;
+    explicit_imports = true,
+    ei_kwargs = (;
+        all_explicit_imports_are_public = (; ignore = (:GotoIfNot,)),
+        all_qualified_accesses_are_public = (; ignore = (:Typeof,)),
+    )
+)
