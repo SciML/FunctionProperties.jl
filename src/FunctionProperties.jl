@@ -3,7 +3,7 @@ module FunctionProperties
 using Core: GotoIfNot
 
 # Backstop against pathological recursion depth; real call trees that matter here are shallow.
-const RECURSION_LIMIT = 32
+const RECURSION_LIMIT = 256
 
 """
     is_leaf(f, args...) -> Bool
