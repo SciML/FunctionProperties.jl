@@ -17,6 +17,23 @@ f_branch() = true ? 1 : 0
 FunctionProperties.is_leaf(::typeof(f_branch)) = true
 @test !FunctionProperties.hasbranching(f_branch)
 
+# Branches behind a non-inlined call boundary must still be detected: the value-dependent
+# `if` lives in `branchy_helper`, not in the immediate IR of the entry function.
+@noinline branchy_helper(x) = x < 0 ? -x : x
+nested_branch_rhs(u, p, t) = branchy_helper(u) + p
+@test FunctionProperties.hasbranching(nested_branch_rhs, 1.0, 2.0, 0.0)
+
+@noinline branchfree_helper(x) = x * x + one(x)
+nested_branchfree_rhs(u, p, t) = branchfree_helper(u) + p
+@test !FunctionProperties.hasbranching(nested_branchfree_rhs, 1.0, 2.0, 0.0)
+
+# An `is_leaf` override stops recursion into the marked callee.
+@noinline opted_out_helper(x) = x < 0 ? -x : x
+opted_out_rhs(u, p, t) = opted_out_helper(u) + p
+@test FunctionProperties.hasbranching(opted_out_rhs, 1.0, 2.0, 0.0)
+FunctionProperties.is_leaf(::typeof(opted_out_helper)) = true
+@test !FunctionProperties.hasbranching(opted_out_rhs, 1.0, 2.0, 0.0)
+
 # Test simple mutating functions
 function f(dx, x)
     return @inbounds dx[1] = x[1]
