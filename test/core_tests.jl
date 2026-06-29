@@ -102,3 +102,60 @@ end
 x0 = [-4.0f0, 0.0f0]
 ts = Float32.(collect(0.0:0.01:tspan[2]))
 @test !FunctionProperties.hasbranching(dxdt_, copy(x0), x0, p, tspan[1])
+
+# ---------------------------------------------------------------------------------------------
+# Value-independent (compile-time-constant) branches must not be reported.
+#
+# A `GotoIfNot` whose condition inference proves `Core.Const` cannot be taken differently under a
+# tracing AD, so it is wrapper/dispatch plumbing rather than the value-dependent branching
+# `hasbranching` is meant to surface. This is the shape of the SciML `ODEFunction` functor
+# (`if f.f isa AbstractSciMLOperator`) and of ML-library device/type-introspection dispatch
+# (SciML/FunctionProperties.jl#46). A *literal* `true`/`false` condition is still a genuine branch
+# and is kept (covered by the `f_branch` test above).
+abstract type FakeOperator end
+struct CondWrap{F}
+    f::F
+end
+function (w::CondWrap)(x)
+    if w.f isa FakeOperator      # concretely-typed field => `isa` folds to a constant
+        return zero(x)
+    else
+        return w.f(x)
+    end
+end
+branchfree_inner(x) = x * x + one(x)
+branchy_inner(x) = x < 0 ? -x : x
+@test !FunctionProperties.hasbranching(CondWrap(branchfree_inner), 1.0)   # const `isa` skipped
+@test FunctionProperties.hasbranching(CondWrap(branchy_inner), 1.0)       # real inner branch kept
+
+# ---------------------------------------------------------------------------------------------
+# Branches behind a *splatted* call boundary must be detected.
+#
+# `g(args...)` lowers to `Core._apply_iterate(iter, g, args)`, hiding the real callee `g` as an
+# argument of a `Core` builtin. The scan must follow the apply through to `g`, otherwise every
+# branch behind a splat forwarder is missed. This is the SciML/MTK RHS shape (`ODEFunction` ->
+# `GeneratedFunctionWrapper` -> `RuntimeGeneratedFunction` -> `generated_callfunc`, each a
+# `f(args...)` forwarder).
+@noinline splat_target_branchy(x) = x < 0 ? -x : x
+@noinline splat_target_free(x) = x * x
+splat_forward_branchy(args...) = splat_target_branchy(args...)
+splat_forward_free(args...) = splat_target_free(args...)
+@test FunctionProperties.hasbranching(splat_forward_branchy, -1.0)
+@test !FunctionProperties.hasbranching(splat_forward_free, -1.0)
+
+# ---------------------------------------------------------------------------------------------
+# `is_leaf_sig`: signature-level exemptions for value-independent plumbing.
+#
+# A branch on an integer index that selects a buffer (the MTK `getindex(::MTKParameters, ::Int)`
+# pattern) is value-independent: each real call site passes a literal index that constant-folds the
+# branch, but the recursion only sees the widened `Int` and so reports it. Such a call can be marked
+# branch-free by signature.
+struct TwoBuffers
+    a::Float64
+    b::Float64
+end
+@noinline select_buffer(c::TwoBuffers, i::Int) = i == 1 ? c.a : c.b
+rhs_with_plumbing(u, p, t) = select_buffer(p, 1) * u
+@test FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
+FunctionProperties.is_leaf_sig(::Type{<:Tuple{typeof(select_buffer), TwoBuffers, Vararg}}) = true
+@test !FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
