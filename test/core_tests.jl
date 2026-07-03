@@ -144,18 +144,37 @@ splat_forward_free(args...) = splat_target_free(args...)
 @test !FunctionProperties.hasbranching(splat_forward_free, -1.0)
 
 # ---------------------------------------------------------------------------------------------
-# `is_leaf_sig`: signature-level exemptions for value-independent plumbing.
+# Constant-decided branches (value-independent) must not be reported.
 #
 # A branch on an integer index that selects a buffer (the MTK `getindex(::MTKParameters, ::Int)`
 # pattern) is value-independent: each real call site passes a literal index that constant-folds the
-# branch, but the recursion only sees the widened `Int` and so reports it. Such a call can be marked
-# branch-free by signature.
-struct TwoBuffers
-    a::Float64
-    b::Float64
+# branch, but ordinary recursion widens the `Int` and so reports it. The constant-argument recursion
+# re-infers the callee with the constant preserved so the branch folds away — where the running
+# Julia's compiler cooperates (`_const_prop_capable()`). It stays conservative: a genuinely
+# value-dependent branch, and a dynamic (non-constant) index, are always reported.
+struct TwoBufferParams
+    a::Vector{Float64}
+    b::Vector{Float64}
 end
-@noinline select_buffer(c::TwoBuffers, i::Int) = i == 1 ? c.a : c.b
-rhs_with_plumbing(u, p, t) = select_buffer(p, 1) * u
-@test FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
-FunctionProperties.is_leaf_sig(::Type{<:Tuple{typeof(select_buffer), TwoBuffers, Vararg}}) = true
-@test !FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
+@generated function pick_buffer(p::TwoBufferParams, idx::Int)
+    quote
+        if idx == 1
+            return p.a
+        elseif idx == 2
+            return p.b
+        else
+            throw(BoundsError(p, idx))
+        end
+    end
+end
+cp_relu(x) = x > 0 ? x : zero(x)
+rhs_const_index(p) = @inbounds pick_buffer(p, 1)[1]
+rhs_dynamic_index(p, i) = @inbounds pick_buffer(p, i)[1]
+rhs_real_branch(u, p) = cp_relu(u) + @inbounds pick_buffer(p, 1)[1]
+tbp = TwoBufferParams([1.0], [2.0])
+
+@test FunctionProperties.hasbranching(rhs_real_branch, 1.0, tbp)   # genuine branch: always reported
+@test FunctionProperties.hasbranching(rhs_dynamic_index, tbp, 1)   # dynamic index: always reported
+if FunctionProperties._const_prop_capable()
+    @test !FunctionProperties.hasbranching(rhs_const_index, tbp)   # constant index folds away
+end

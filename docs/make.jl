@@ -28,6 +28,6 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/SciML/MultiScaleArrays.jl.git";
+    repo = "github.com/SciML/FunctionProperties.jl.git";
     push_preview = true
 )
