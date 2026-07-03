@@ -15,35 +15,74 @@ const RECURSION_LIMIT = 256
 # conditions that [`_is_const_gotoifnot`](@ref) already skips -- generalizing [`is_leaf_sig`](@ref)
 # without any per-container knowledge.
 #
-# This relies on `Base.Compiler` (`Core.Compiler`) internals whose API churns across Julia
-# versions, so it is capability-gated and OFF by default. Enable with [`enable_const_prop!`](@ref).
+# This relies on `Base.Compiler` (`Core.Compiler`) internals whose API churns across Julia versions
+# (the `InferenceState` construction and inferred-source extraction already differ between 1.12 and
+# 1.13), so it is *functionally* capability-gated -- see `_const_prop_capable` -- and OFF by
+# default. Enable with [`enable_const_prop!`](@ref).
 const _CC = isdefined(Base, :Compiler) ? Base.Compiler : Core.Compiler
 
-const _CONST_PROP_CAPABLE = try
-    isdefined(_CC, :NativeInterpreter) && isdefined(_CC, :InferenceResult) &&
-        isdefined(_CC, :InferenceState) && isdefined(_CC, :typeinf) &&
-        hasmethod(_CC.InferenceResult, Tuple{Core.MethodInstance, Vector{Any}, BitVector})
-catch
-    false
+const _CONST_PROP = Ref(false)
+# `nothing` until the functional probe has run; then `true`/`false`.
+const _CONST_PROP_CAPABLE = Ref{Union{Nothing, Bool}}(nothing)
+
+# Fixture with a branch decided purely by a constant integer index -- the shape the feature must
+# fold. Used only by the capability probe.
+struct _ProbeContainer
+    a::Int
+    b::Int
+end
+@generated function _probe_indexed(x::_ProbeContainer, idx::Int)
+    quote
+        if idx == 1
+            return x.a
+        else
+            return x.b
+        end
+    end
 end
 
-const _CONST_PROP = Ref(false)
+# Verify, on the running Julia, that constant inference actually folds a constant-decided branch:
+# the constant-index call must come back branch-free while the widened-index call must not. If the
+# compiler internals we depend on have shifted shape, this returns `false` and the feature stays
+# inert (so behaviour is identical to the plain type recursion). Probed once, then cached.
+function _probe_const_prop()
+    sig = Tuple{typeof(_probe_indexed), _ProbeContainer, Int}
+    folded = _const_infer_src(sig, Any[Core.Const(_probe_indexed), _ProbeContainer, Core.Const(1)])
+    widened = _const_infer_src(sig, Any[Core.Const(_probe_indexed), _ProbeContainer, Int])
+    folded isa Core.CodeInfo || return false
+    widened isa Core.CodeInfo || return false
+    return _count_nonconst_gotoifnot(folded) == 0 && _count_nonconst_gotoifnot(widened) > 0
+end
+
+function _const_prop_capable()
+    v = _CONST_PROP_CAPABLE[]
+    if v === nothing
+        v = try
+            _probe_const_prop()
+        catch
+            false
+        end
+        _CONST_PROP_CAPABLE[] = v
+    end
+    return v
+end
 
 """
     enable_const_prop!(on::Bool = true) -> Bool
 
 Experimental. Toggle constant-propagation-aware recursion in [`hasbranching`](@ref). When on (and
-the running Julia exposes the required `Base.Compiler` API, see `_CONST_PROP_CAPABLE`), a call with
-constant arguments is re-inferred with those constants preserved, so value-independent branches
-decided by a constant (e.g. selecting a buffer by a literal index) fold away instead of being
-reported. Off by default because it depends on compiler internals. Returns the effective state.
+the running Julia's compiler internals still fold a constant-decided branch, verified functionally
+by [`_const_prop_capable`](@ref)), a call with constant arguments is re-inferred with those
+constants preserved, so value-independent branches decided by a constant (e.g. selecting a buffer
+by a literal index) fold away instead of being reported. Off by default because it depends on
+compiler internals. Returns the effective state.
 """
 function enable_const_prop!(on::Bool = true)
     _CONST_PROP[] = on
     return _const_prop_active()
 end
 
-_const_prop_active() = _CONST_PROP[] && _CONST_PROP_CAPABLE
+_const_prop_active() = _CONST_PROP[] && _const_prop_capable()
 
 """
     is_leaf(f, args...) -> Bool
@@ -169,6 +208,15 @@ end
 
 _const_key(argtypes) = map(x -> x isa Core.Const ? (true, x.val) : (false, x), argtypes)
 
+# Run inference on `sig` with the given argument lattice (some `Core.Const`) preserved, and return
+# the inferred (unoptimized) `CodeInfo`, or `nothing` if the compiler internals do not cooperate.
+# The `InferenceState` construction and the inferred-source location differ across Julia versions:
+# 1.12 accepts `InferenceState(result, cache_mode, interp)` and exposes the body on `result.src`,
+# while 1.13 wants the uninferred source passed explicitly and exposes the body on `frame.src`. We
+# try the explicit-source form first (works on both) with the non-caching `:volatile` mode, then
+# fall back, and read whichever of `frame.src`/`result.src` is a `CodeInfo`. Any shape we don't
+# recognise simply yields `nothing`, and the functional probe (`_const_prop_capable`) keeps the
+# whole feature inert on such versions.
 function _const_infer_src(@nospecialize(sig), argtypes)
     m = try
         Base.which(sig)
@@ -181,25 +229,45 @@ function _const_infer_src(@nospecialize(sig), argtypes)
         return nothing
     end
     overridden = BitVector(x isa Core.Const for x in argtypes)
-    interp = _CC.NativeInterpreter()
-    result = try
-        _CC.InferenceResult(mi, Any[argtypes...], overridden)
+    src0 = try
+        _CC.retrieve_code_info(mi, Base.get_world_counter())
     catch
-        return nothing
+        nothing
     end
-    for cache_mode in (:volatile, :local, :global)
-        try
-            frame = _CC.InferenceState(result, cache_mode, interp)
+    # A fresh `InferenceResult`/`InferenceState` per attempt: an `InferenceResult` cannot be
+    # re-inferred once used.
+    for build in (
+            interp -> src0 isa Core.CodeInfo ?
+                      _CC.InferenceState(_new_result(mi, argtypes, overridden), src0, :volatile, interp) :
+                      nothing,
+            interp -> _CC.InferenceState(_new_result(mi, argtypes, overridden), :volatile, interp),
+        )
+        src = try
+            interp = _CC.NativeInterpreter()
+            frame = build(interp)
             frame === nothing && continue
             _CC.typeinf(interp, frame)
-            src = frame.result.src
-            src isa Core.CodeInfo && return src
+            _inferred_src(frame)
         catch
-            continue
+            nothing
         end
+        src isa Core.CodeInfo && return src
     end
     return nothing
 end
+
+_new_result(mi, argtypes, overridden) = _CC.InferenceResult(mi, Any[argtypes...], overridden)
+
+function _inferred_src(frame)
+    if isdefined(frame, :src) && getfield(frame, :src) isa Core.CodeInfo
+        return getfield(frame, :src)
+    end
+    r = getfield(frame, :result)
+    return (r isa _CC.InferenceResult && r.src isa Core.CodeInfo) ? r.src : nothing
+end
+
+_count_nonconst_gotoifnot(ci::Core.CodeInfo) =
+    count(s -> isa(s, GotoIfNot) && !_is_const_gotoifnot(s, ci), ci.code)
 
 # A `GotoIfNot` whose condition type inference has *proven* constant is a compile-time branch,
 # not a value-dependent one: e.g. an `x isa T` test on a concretely-typed field (the SciML

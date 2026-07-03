@@ -193,7 +193,7 @@ tbp = TwoBufferParams([1.0], [2.0])
 @test !FunctionProperties.enable_const_prop!(false)
 @test FunctionProperties.hasbranching(rhs_const_index, tbp)
 
-if FunctionProperties._CONST_PROP_CAPABLE
+if FunctionProperties._const_prop_capable()
     @test FunctionProperties.enable_const_prop!(true)
     try
         @test !FunctionProperties.hasbranching(rhs_const_index, tbp)      # constant index folds
