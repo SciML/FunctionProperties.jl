@@ -5,6 +5,46 @@ using Core: GotoIfNot
 # Backstop against pathological recursion depth; real call trees that matter here are shallow.
 const RECURSION_LIMIT = 256
 
+# ---- experimental: constant-propagation-aware recursion ------------------------------------
+#
+# When recursing into a call, ordinary analysis widens every argument to its type, discarding
+# constants. A branch decided by a constant argument (e.g. selecting a buffer by a literal index
+# inside a parameter container) therefore looks value-dependent even though every real call site
+# folds it. If we instead preserve the `Core.Const` argument and re-run *inference* (no optimizer,
+# so no library/structural branches are inlined into view), such branches fold to `Core.Const`
+# conditions that [`_is_const_gotoifnot`](@ref) already skips -- generalizing [`is_leaf_sig`](@ref)
+# without any per-container knowledge.
+#
+# This relies on `Base.Compiler` (`Core.Compiler`) internals whose API churns across Julia
+# versions, so it is capability-gated and OFF by default. Enable with [`enable_const_prop!`](@ref).
+const _CC = isdefined(Base, :Compiler) ? Base.Compiler : Core.Compiler
+
+const _CONST_PROP_CAPABLE = try
+    isdefined(_CC, :NativeInterpreter) && isdefined(_CC, :InferenceResult) &&
+        isdefined(_CC, :InferenceState) && isdefined(_CC, :typeinf) &&
+        hasmethod(_CC.InferenceResult, Tuple{Core.MethodInstance, Vector{Any}, BitVector})
+catch
+    false
+end
+
+const _CONST_PROP = Ref(false)
+
+"""
+    enable_const_prop!(on::Bool = true) -> Bool
+
+Experimental. Toggle constant-propagation-aware recursion in [`hasbranching`](@ref). When on (and
+the running Julia exposes the required `Base.Compiler` API, see `_CONST_PROP_CAPABLE`), a call with
+constant arguments is re-inferred with those constants preserved, so value-independent branches
+decided by a constant (e.g. selecting a buffer by a literal index) fold away instead of being
+reported. Off by default because it depends on compiler internals. Returns the effective state.
+"""
+function enable_const_prop!(on::Bool = true)
+    _CONST_PROP[] = on
+    return _const_prop_active()
+end
+
+_const_prop_active() = _CONST_PROP[] && _CONST_PROP_CAPABLE
+
 """
     is_leaf(f, args...) -> Bool
 
@@ -96,15 +136,69 @@ function _hasbranching(@nospecialize(sig), seen, depth)
         # Generated functions that were not expanded come back as `Method`, not `CodeInfo`;
         # there is no body to scan, so treat them as leaves.
         ci isa Core.CodeInfo || continue
-        for stmt in ci.code
-            if isa(stmt, GotoIfNot)
-                _is_const_gotoifnot(stmt, ci) || return true
-            elseif _recurse_call(stmt, ci, seen, depth)
-                return true
-            end
+        _scan_codeinfo(ci, seen, depth) && return true
+    end
+    return false
+end
+
+function _scan_codeinfo(ci, seen, depth)
+    for stmt in ci.code
+        if isa(stmt, GotoIfNot)
+            _is_const_gotoifnot(stmt, ci) || return true
+        elseif _recurse_call(stmt, ci, seen, depth)
+            return true
         end
     end
     return false
+end
+
+# Constant-argument recursion (experimental, see [`enable_const_prop!`](@ref)): re-infer the callee
+# with the constant lattice elements preserved so branches decided by a constant argument fold to
+# `Core.Const` conditions. Inference is run *without* the optimizer, so no library/structural
+# branches are inlined into view. Falls back to the plain type recursion whenever the constant
+# inference is unavailable or fails.
+function _hasbranching_const(@nospecialize(sig), argtypes, seen, depth)
+    depth > RECURSION_LIMIT && return false
+    key = (sig, _const_key(argtypes))
+    key in seen && return false
+    push!(seen, key)
+    src = _const_infer_src(sig, argtypes)
+    src isa Core.CodeInfo || return _hasbranching(sig, seen, depth)
+    return _scan_codeinfo(src, seen, depth)
+end
+
+_const_key(argtypes) = map(x -> x isa Core.Const ? (true, x.val) : (false, x), argtypes)
+
+function _const_infer_src(@nospecialize(sig), argtypes)
+    m = try
+        Base.which(sig)
+    catch
+        return nothing
+    end
+    mi = try
+        Base.specialize_method(m, sig, Core.svec())
+    catch
+        return nothing
+    end
+    overridden = BitVector(x isa Core.Const for x in argtypes)
+    interp = _CC.NativeInterpreter()
+    result = try
+        _CC.InferenceResult(mi, Any[argtypes...], overridden)
+    catch
+        return nothing
+    end
+    for cache_mode in (:volatile, :local, :global)
+        try
+            frame = _CC.InferenceState(result, cache_mode, interp)
+            frame === nothing && continue
+            _CC.typeinf(interp, frame)
+            src = frame.result.src
+            src isa Core.CodeInfo && return src
+        catch
+            continue
+        end
+    end
+    return nothing
 end
 
 # A `GotoIfNot` whose condition type inference has *proven* constant is a compile-time branch,
@@ -143,7 +237,9 @@ function _recurse_call(@nospecialize(stmt), ci, seen, depth)
                 getfield(mi, :def).specTypes : nothing
             )
         callsig === nothing && return false
-        return _recurse_sig(callsig, nothing, seen, depth)
+        _, fval = _resolve_callee(call.args[2], ci)
+        arglat = Any[_arg_lattice(a, ci) for a in @view call.args[3:end]]
+        return _recurse_sig(callsig, fval, arglat, seen, depth)
     end
 
     Meta.isexpr(call, :call) || return false
@@ -152,8 +248,8 @@ function _recurse_call(@nospecialize(stmt), ci, seen, depth)
     end
     ftype, fval = _resolve_callee(call.args[1], ci)
     ftype === nothing && return false
-    argtypes = Any[_value_type(a, ci) for a in @view call.args[2:end]]
-    return _recurse_sig(Tuple{ftype, argtypes...}, fval, seen, depth)
+    arglat = Any[_arg_lattice(a, ci) for a in @view call.args[2:end]]
+    return _recurse_sig(Tuple{ftype, (_lat_type(x) for x in arglat)...}, fval, arglat, seen, depth)
 end
 
 _is_apply(@nospecialize(f)) =
@@ -185,10 +281,11 @@ function _recurse_apply(call, ci, seen, depth)
             return false
         end
     end
-    return _recurse_sig(Tuple{ftype, argtypes...}, fval, seen, depth)
+    # Splatted arguments are recovered from tuple element *types*; constants are not available here.
+    return _recurse_sig(Tuple{ftype, argtypes...}, fval, Any[argtypes...], seen, depth)
 end
 
-function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), seen, depth)
+function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen, depth)
     # Honor user `is_leaf` overrides when the concrete function value is recoverable.
     fval !== nothing && is_leaf(fval) && return false
     # Signature-level overrides: exemptions that depend on the argument types.
@@ -199,7 +296,46 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), seen, depth)
         return false
     end
     _is_library_method(m) && return false
+    if _const_prop_active() && any(x -> x isa Core.Const, arglat)
+        funclat = fval !== nothing ? Core.Const(fval) : _first_param(callsig)
+        return _hasbranching_const(callsig, Any[funclat, arglat...], seen, depth + 1)
+    end
     return _hasbranching(callsig, seen, depth + 1)
+end
+
+_first_param(@nospecialize(sig)) =
+    (sig isa DataType && !isempty(sig.parameters)) ? sig.parameters[1] : Any
+_lat_type(@nospecialize(x)) = x isa Core.Const ? Core.Typeof(x.val) : x
+
+# Argument lattice element: a `Core.Const` when the argument is a compile-time constant, otherwise
+# the widened type. Preserving the `Core.Const` is what lets a constant index survive the recursion
+# boundary so `_hasbranching_const` can fold the branch it decides.
+function _arg_lattice(@nospecialize(a), ci)
+    if a isa Core.SSAValue
+        t = ci.ssavaluetypes[a.id]
+        return t isa Core.Const ? t : _widen(t)
+    elseif a isa Core.Argument
+        st = ci.slottypes
+        st === nothing && return Any
+        t = st[a.n]
+        return t isa Core.Const ? t : _widen(t)
+    elseif a isa Core.SlotNumber
+        st = ci.slottypes
+        st === nothing && return Any
+        t = st[a.id]
+        return t isa Core.Const ? t : _widen(t)
+    elseif a isa GlobalRef
+        return (isdefined(a.mod, a.name) && isconst(a.mod, a.name)) ?
+            Core.Const(getglobal(a.mod, a.name)) : Any
+    elseif a isa QuoteNode
+        return Core.Const(a.value)
+    elseif a isa Expr || a isa Core.GotoNode || a isa GotoIfNot ||
+            a isa Core.NewvarNode || a isa Core.ReturnNode
+        return Any
+    else
+        # Raw literal constant embedded in the IR (e.g. an `Int` index).
+        return Core.Const(a)
+    end
 end
 
 # Library code (`Base`, `Core`, stdlibs) is treated as a leaf: its branches are structural or
@@ -254,6 +390,6 @@ _widen(@nospecialize t) =
     t isa Core.PartialStruct ? t.typ :
     isa(t, Type) ? t : Any
 
-export hasbranching, is_leaf, is_leaf_sig
+export hasbranching, is_leaf, is_leaf_sig, enable_const_prop!
 
 end

@@ -159,3 +159,47 @@ rhs_with_plumbing(u, p, t) = select_buffer(p, 1) * u
 @test FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
 FunctionProperties.is_leaf_sig(::Type{<:Tuple{typeof(select_buffer), TwoBuffers, Vararg}}) = true
 @test !FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
+
+# ---------------------------------------------------------------------------------------------
+# Experimental: constant-propagation-aware recursion (`enable_const_prop!`).
+#
+# A branch decided by a *constant* argument (e.g. selecting a buffer by a literal index) is
+# value-independent, but ordinary recursion widens the argument and reports it. With const-prop on,
+# the callee is re-inferred with the constant preserved so such branches fold away. It stays
+# conservative: a genuinely value-dependent branch, or a dynamic (non-constant) index, is still
+# reported. Off by default, so it must not change any behavior unless explicitly enabled.
+struct TwoBufferParams
+    a::Vector{Float64}
+    b::Vector{Float64}
+end
+@generated function pick_buffer(p::TwoBufferParams, idx::Int)
+    quote
+        if idx == 1
+            return p.a
+        elseif idx == 2
+            return p.b
+        else
+            throw(BoundsError(p, idx))
+        end
+    end
+end
+cp_relu(x) = x > 0 ? x : zero(x)
+rhs_const_index(p) = @inbounds pick_buffer(p, 1)[1]
+rhs_dynamic_index(p, i) = @inbounds pick_buffer(p, i)[1]
+rhs_real_branch(u, p) = cp_relu(u) + @inbounds pick_buffer(p, 1)[1]
+tbp = TwoBufferParams([1.0], [2.0])
+
+# Default: off -> the value-independent index branch is (conservatively) still reported.
+@test !FunctionProperties.enable_const_prop!(false)
+@test FunctionProperties.hasbranching(rhs_const_index, tbp)
+
+if FunctionProperties._CONST_PROP_CAPABLE
+    @test FunctionProperties.enable_const_prop!(true)
+    try
+        @test !FunctionProperties.hasbranching(rhs_const_index, tbp)      # constant index folds
+        @test FunctionProperties.hasbranching(rhs_real_branch, 1.0, tbp)  # genuine branch kept
+        @test FunctionProperties.hasbranching(rhs_dynamic_index, tbp, 1)  # dynamic index: conservative
+    finally
+        FunctionProperties.enable_const_prop!(false)
+    end
+end

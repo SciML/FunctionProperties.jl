@@ -1,6 +1,6 @@
 name = "FunctionProperties"
 uuid = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
-version = "0.1.7"
+version = "0.1.8"
 authors = ["SciML"]
 
 [deps]
