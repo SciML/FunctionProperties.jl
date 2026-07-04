@@ -5,6 +5,15 @@ using Core: GotoIfNot
 # Backstop against pathological recursion depth; real call trees that matter here are shallow.
 const RECURSION_LIMIT = 256
 
+# Refutations are only *started* this close to the root. A refutation that cannot bottom out
+# within the remaining depth budget can never succeed, so starting one deep inside a
+# constant-recursion tower only pays for a doomed re-descent -- and since failed refutations are
+# (soundly) not memoized, a tower deeper than `RECURSION_LIMIT` otherwise re-descends once per
+# level: O(limit^2) inference calls, which measured in the tens of minutes. Constant recursion
+# that legitimately folds is shallow (a handful of levels); anything deeper is conservatively
+# reported as branching.
+const REFUTATION_DEPTH_LIMIT = 32
+
 # `hasbranching` recurses through statically resolved calls. Ordinary analysis widens every argument
 # to its type, which loses constants: a branch decided by a *constant* argument (e.g. selecting a
 # buffer by a literal index inside a parameter container) then looks value-dependent even though
@@ -72,25 +81,35 @@ FunctionProperties.is_leaf(::typeof(my_fn)) = true
 function hasbranching(f, x...)
     is_leaf(f, x...) && return false
     sig = Tuple{Core.Typeof(f), Core.Typeof.(x)...}
-    return _hasbranching(sig, Set{Any}(), 0)
+    return _hasbranching(sig, Set{Any}(), 0) != NOBRANCH
 end
 
+# Scan results form a tri-state. `LIMITED` ("could be branching") is distinct from `BRANCH` so
+# refutation is only ever attempted on a branch that was actually *seen*: a limit-tainted result
+# would make any refutation fail (its scan exhausts the same budget), so attempting one only pays
+# for a doomed re-descent -- on a deep distinct-signature tower (e.g. `Val{N}` recursion), once per
+# level, which measured in the tens of minutes.
+const NOBRANCH = 0x00
+const BRANCH = 0x01
+const LIMITED = 0x02
+
 # `seen` serves two roles: cycle breaking for sigs on the current DFS path, and memoization of
-# sigs proven branch-free. A `false` result is sound to memoize globally -- the scan uses widened
-# argument types, and constants can only fold branches away, so a type-level `false` holds for
-# every call site. A `true` result is NOT memoized: sigs on a true-returning chain are popped
-# before returning, because constant refutation may flip that `true` to `false` at one call site
-# while another call site of the same sig (with different or no constants) must still re-analyze
-# and report the branch. Leaving them in `seen` produced order-dependent false negatives.
+# sigs proven branch-free. A `NOBRANCH` result is sound to memoize globally -- the scan uses
+# widened argument types, and constants can only fold branches away, so a type-level `NOBRANCH`
+# holds for every call site. Non-`NOBRANCH` results are NOT memoized: those sigs are popped before
+# returning, because constant refutation may flip a `BRANCH` to branch-free at one call site while
+# another call site of the same sig (with different or no constants) must still re-analyze and
+# report the branch (memoizing them produced order-dependent false negatives), and `LIMITED`
+# depends on the remaining depth budget.
 function _hasbranching(@nospecialize(sig), seen, depth)
-    depth > RECURSION_LIMIT && return false
-    sig in seen && return false
+    depth > RECURSION_LIMIT && return LIMITED
+    sig in seen && return NOBRANCH
     push!(seen, sig)
 
     results = try
         Base.code_typed_by_type(sig; optimize = false)
     catch
-        return false
+        return NOBRANCH
     end
 
     for pair in results
@@ -98,23 +117,25 @@ function _hasbranching(@nospecialize(sig), seen, depth)
         # Generated functions that were not expanded come back as `Method`, not `CodeInfo`;
         # there is no body to scan, so treat them as leaves.
         ci isa Core.CodeInfo || continue
-        if _scan_codeinfo(ci, seen, depth)
+        r = _scan_codeinfo(ci, seen, depth)
+        if r != NOBRANCH
             delete!(seen, sig)
-            return true
+            return r
         end
     end
-    return false
+    return NOBRANCH
 end
 
 function _scan_codeinfo(ci, seen, depth)
     for stmt in ci.code
         if isa(stmt, GotoIfNot)
-            _is_const_gotoifnot(stmt, ci) || return true
-        elseif _recurse_call(stmt, ci, seen, depth)
-            return true
+            _is_const_gotoifnot(stmt, ci) || return BRANCH
+        else
+            r = _recurse_call(stmt, ci, seen, depth)
+            r != NOBRANCH && return r
         end
     end
-    return false
+    return NOBRANCH
 end
 
 # A `GotoIfNot` whose condition type inference has *proven* constant is a compile-time branch,
@@ -150,21 +171,21 @@ function _recurse_call(@nospecialize(stmt), ci, seen, depth)
         mi = call.args[1]
         callsig = mi isa Core.MethodInstance ? mi.specTypes :
             (
-            isdefined(mi, :def) && getfield(mi, :def) isa Core.MethodInstance ?
+                isdefined(mi, :def) && getfield(mi, :def) isa Core.MethodInstance ?
                 getfield(mi, :def).specTypes : nothing
-        )
-        callsig === nothing && return false
+            )
+        callsig === nothing && return NOBRANCH
         _, fval = _resolve_callee(call.args[2], ci)
         arglat = Any[_arg_lattice(a, ci) for a in @view call.args[3:end]]
         return _recurse_sig(callsig, fval, arglat, seen, depth)
     end
 
-    Meta.isexpr(call, :call) || return false
+    Meta.isexpr(call, :call) || return NOBRANCH
     if _is_apply(call.args[1])
         return _recurse_apply(call, ci, seen, depth)
     end
     ftype, fval = _resolve_callee(call.args[1], ci)
-    ftype === nothing && return false
+    ftype === nothing && return NOBRANCH
     arglat = Any[_arg_lattice(a, ci) for a in @view call.args[2:end]]
     return _recurse_sig(Tuple{ftype, (_lat_type(x) for x in arglat)...}, fval, arglat, seen, depth)
 end
@@ -183,9 +204,9 @@ _is_apply(@nospecialize(f)) =
 function _recurse_apply(call, ci, seen, depth)
     args = call.args
     fpos = args[1].name === :_apply_iterate ? 3 : 2
-    length(args) >= fpos || return false
+    length(args) >= fpos || return NOBRANCH
     ftype, fval = _resolve_callee(args[fpos], ci)
-    ftype === nothing && return false
+    ftype === nothing && return NOBRANCH
     argtypes = Any[]
     for a in @view args[(fpos + 1):end]
         at = _value_type(a, ci)
@@ -194,7 +215,7 @@ function _recurse_apply(call, ci, seen, depth)
         else
             # Splatted container whose element types we cannot recover statically: bail rather than
             # guess a wrong signature.
-            return false
+            return NOBRANCH
         end
     end
     # Splatted arguments are recovered from tuple element *types*; constants are not available here.
@@ -203,35 +224,49 @@ end
 
 function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen, depth)
     # Honor user `is_leaf` overrides when the concrete function value is recoverable.
-    fval !== nothing && is_leaf(fval) && return false
+    fval !== nothing && is_leaf(fval) && return NOBRANCH
     m = try
         Base.which(callsig)
     catch
-        return false
+        return NOBRANCH
     end
-    _is_library_method(m) && return false
-    # Out of depth budget: report a branch rather than assuming a leaf. Refutation manufactures
-    # depth (one level per constant-recursion step), and `_hasbranching`'s limit backstop returns
-    # `false`, which a refutation cascade would read as "branch-free" -- silently refuting a genuine
-    # value-dependent branch sitting below the cutoff (e.g. at the base of a 400-deep
-    # constant-recursion tower). "Cannot verify" must fail refutation, so the polarity here is
-    # conservative for both scan contexts.
-    depth + 1 > RECURSION_LIMIT && return true
-    # The type recursion is the source of truth. If it finds no branch, we are done.
-    _hasbranching(callsig, seen, depth + 1) || return false
-    # It found a branch. If constant arguments decide that branch, re-inferring with the constants
-    # preserved folds it away -- so only then do we let the constant path *refute* the finding. This
-    # can only downgrade a reported branch to branch-free, never the reverse, and it is skipped
-    # entirely (leaving the branch reported) when there are no constant arguments, when the compiler
-    # internals do not cooperate, or when the constant inference errors.
-    if _const_prop_capable() && any(x -> x isa Core.Const, arglat)
+    _is_library_method(m) && return NOBRANCH
+    # Out of depth budget: "could be branching", never "assume a leaf". Refutation manufactures
+    # depth (one level per constant-recursion step), and a branch-free backstop here let a
+    # refutation cascade silently fold away a genuine value-dependent branch sitting below the
+    # cutoff (e.g. at the base of a 400-deep constant-recursion tower).
+    depth + 1 > RECURSION_LIMIT && return LIMITED
+    with_consts = depth <= REFUTATION_DEPTH_LIMIT && _const_prop_capable() &&
+        any(x -> x isa Core.Const, arglat)
+    local argtypes, ck
+    if with_consts
         funclat = fval !== nothing ? Core.Const(fval) : _first_param(callsig)
         argtypes = Any[funclat, arglat...]
+        ck = _const_key(argtypes)
+        # Successful refutations are memoized: a refutation that succeeded is path-independent --
+        # the cycle marker below can only inject conservative "branch" verdicts, which would have
+        # made it fail -- so its result is reusable anywhere, and it subsumes the type-level scan.
+        # Failed refutations are not memoized, since they can be an artifact of the marker on the
+        # current path. Without this memo, constant-recursion towers re-analyze and re-refute the
+        # identical (sig, constants) on every re-scan, which is quadratic in tower depth.
+        (:refuted, callsig, ck) in seen && return NOBRANCH
+    end
+    # The type recursion is the source of truth. If it finds no branch, we are done.
+    res = _hasbranching(callsig, seen, depth + 1)
+    res == NOBRANCH && return NOBRANCH
+    # Refutation is attempted only for `BRANCH` -- a branch that was actually seen and that the
+    # constant arguments may decide. A `LIMITED` result cannot be refuted (the refutation's own
+    # scan would exhaust the same budget and fail), so attempting one only pays for a doomed
+    # re-descent. Refutation can only downgrade a reported branch to branch-free, never the
+    # reverse, and it is skipped entirely (leaving the branch reported) when there are no constant
+    # arguments, when the compiler internals do not cooperate, or when the constant inference
+    # errors.
+    if res == BRANCH && with_consts
         # A transient path marker breaks refutation cycles: a constant-recursive callee whose
         # folded body reaches the same (sig, constants) again must not re-enter refutation (it
         # previously recursed until stack overflow, which the error handling then converted into
         # "refuted" -- a false negative). Hitting the marker leaves the branch reported.
-        key = (:refute, callsig, _const_key(argtypes))
+        key = (:refute, callsig, ck)
         if !(key in seen)
             push!(seen, key)
             refuted = try
@@ -239,29 +274,41 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
             finally
                 delete!(seen, key)
             end
-            refuted && return false
+            if refuted
+                push!(seen, (:refuted, callsig, ck))
+                return NOBRANCH
+            end
         end
     end
-    return true
+    return res
 end
 
 # Re-infer `sig` with the constant lattice elements preserved and report whether the result is
 # branch-free. The scan shares the caller's `seen`, so proven-branch-free sigs are reused and
 # nested refutations bump `depth`, keeping the recursion bounded by `RECURSION_LIMIT`. Returns
-# `false` -- i.e. does not refute -- whenever the constant inference is unavailable, fails, or leaves
-# a branch, so an inability to fold never suppresses a genuine branch.
+# `false` -- i.e. does not refute -- whenever the constant inference is unavailable, fails, hits
+# the depth budget (`LIMITED` is "could be branching"), or leaves a branch, so an inability to
+# fold never suppresses a genuine branch.
 function _const_refutes(@nospecialize(sig), argtypes, seen, depth)
     depth > RECURSION_LIMIT && return false
     src = _const_infer_src(sig, argtypes)
     src isa Core.CodeInfo || return false
     return try
-        !_scan_codeinfo(src, seen, depth)
+        _scan_codeinfo(src, seen, depth) == NOBRANCH
     catch
         false
     end
 end
 
-_const_key(argtypes) = map(x -> x isa Core.Const ? (true, x.val) : (false, x), argtypes)
+# The refute marker must be cheap and total to hash: non-isbits constant values are keyed by
+# object identity, which is exact for the marker's purpose (the same constant reaching the same
+# sig along one DFS path is the same object) and never recurses into user data -- hashing the
+# value itself was O(length) for large constants and a stack overflow for self-referential ones.
+_const_key(argtypes) = map(argtypes) do x
+    x isa Core.Const || return (false, x)
+    v = x.val
+    return (true, isbitstype(typeof(v)) || v isa Symbol ? v : objectid(v))
+end
 
 _first_param(@nospecialize(sig)) =
     (sig isa DataType && !isempty(sig.parameters)) ? sig.parameters[1] : Any
@@ -337,7 +384,8 @@ function _const_infer_src(@nospecialize(sig), argtypes)
                 interp = _CC.NativeInterpreter()
                 frame = explicit_src ?
                     _CC.InferenceState(
-                        _new_result(mi, argtypes, overridden), copy(src0), cache_mode, interp) :
+                        _new_result(mi, argtypes, overridden), copy(src0), cache_mode, interp
+                    ) :
                     _CC.InferenceState(_new_result(mi, argtypes, overridden), cache_mode, interp)
                 frame === nothing && continue
                 _CC.typeinf(interp, frame)
@@ -374,7 +422,7 @@ struct _ProbeContainer
     b::Int
 end
 @generated function _probe_indexed(x::_ProbeContainer, idx::Int)
-    quote
+    return quote
         if idx == 1
             return x.a
         else

@@ -157,7 +157,7 @@ struct TwoBufferParams
     b::Vector{Float64}
 end
 @generated function pick_buffer(p::TwoBufferParams, idx::Int)
-    quote
+    return quote
         if idx == 1
             return p.a
         elseif idx == 2
@@ -220,3 +220,13 @@ if FunctionProperties._const_prop_capable()
 end
 @test FunctionProperties.hasbranching(rhs_cnt400, tbp)
 @test FunctionProperties.hasbranching(rhs_asc, tbp)
+
+# The refutation path marker keys non-isbits constants by object identity: hashing the value
+# itself stack-overflowed on self-referential constants (uncaught, escaping `hasbranching`) and
+# was O(length) on large ones. The exact result is version-dependent (whether inference folds
+# predicates on a mutable constant); the invariant is that the query completes.
+const SELFREF_CONST = Any[]
+push!(SELFREF_CONST, SELFREF_CONST)
+selref_pick(p, v) = isempty(v) ? p.a : p.b
+rhs_selfref(p) = selref_pick(p, SELFREF_CONST)[1]
+@test FunctionProperties.hasbranching(rhs_selfref, tbp) isa Bool
