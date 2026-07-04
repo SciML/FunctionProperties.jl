@@ -210,6 +210,13 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
         return false
     end
     _is_library_method(m) && return false
+    # Out of depth budget: report a branch rather than assuming a leaf. Refutation manufactures
+    # depth (one level per constant-recursion step), and `_hasbranching`'s limit backstop returns
+    # `false`, which a refutation cascade would read as "branch-free" -- silently refuting a genuine
+    # value-dependent branch sitting below the cutoff (e.g. at the base of a 400-deep
+    # constant-recursion tower). "Cannot verify" must fail refutation, so the polarity here is
+    # conservative for both scan contexts.
+    depth + 1 > RECURSION_LIMIT && return true
     # The type recursion is the source of truth. If it finds no branch, we are done.
     _hasbranching(callsig, seen, depth + 1) || return false
     # It found a branch. If constant arguments decide that branch, re-inferring with the constants

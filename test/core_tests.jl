@@ -197,3 +197,26 @@ mutual_b(p, n) = n == 1 ? p.b : mutual_a(p, 3)
 rhs_mutual(p) = mutual_a(p, 5)[1]
 @test FunctionProperties.hasbranching(rhs_recur, tbp)
 @test FunctionProperties.hasbranching(rhs_mutual, tbp)
+
+# A value-dependent branch at the base of a constant-recursion tower must never be lost, even when
+# the tower exceeds the refutation depth budget: exhausting the budget fails refutation ("cannot
+# verify" reports the branch) rather than assuming a leaf. Previously the depth backstop returned
+# branch-free, which a refutation cascade silently propagated into a false negative.
+hidden_base(p, n, x) = n == 0 ? (x > 0 ? p.a : p.b) : hidden_base(p, n - 1, x)
+rhs_hidden5(p, x) = hidden_base(p, 5, x)[1]
+rhs_hidden400(p, x) = hidden_base(p, 400, x)[1]
+@test FunctionProperties.hasbranching(rhs_hidden5, tbp, 0.5)
+@test FunctionProperties.hasbranching(rhs_hidden400, tbp, 0.5)
+
+# Constant-decided recursion folds fully below the depth budget, and is conservatively reported
+# above it. A diverging constant recursion (`n + 1`) must terminate via the depth budget.
+cnt_const(p, n) = n == 0 ? p.a : cnt_const(p, n - 1)
+rhs_cnt5(p) = cnt_const(p, 5)[1]
+rhs_cnt400(p) = cnt_const(p, 400)[1]
+asc_const(p, n) = n == 0 ? p.a : asc_const(p, n + 1)
+rhs_asc(p) = asc_const(p, 5)[1]
+if FunctionProperties._const_prop_capable()
+    @test !FunctionProperties.hasbranching(rhs_cnt5, tbp)
+end
+@test FunctionProperties.hasbranching(rhs_cnt400, tbp)
+@test FunctionProperties.hasbranching(rhs_asc, tbp)
