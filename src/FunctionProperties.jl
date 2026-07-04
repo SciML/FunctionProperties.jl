@@ -238,19 +238,16 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
     depth + 1 > RECURSION_LIMIT && return LIMITED
     with_consts = depth <= REFUTATION_DEPTH_LIMIT && _const_prop_capable() &&
         any(x -> x isa Core.Const, arglat)
-    local argtypes, ck
-    if with_consts
-        funclat = fval !== nothing ? Core.Const(fval) : _first_param(callsig)
-        argtypes = Any[funclat, arglat...]
-        ck = _const_key(argtypes)
-        # Successful refutations are memoized: a refutation that succeeded is path-independent --
-        # the cycle marker below can only inject conservative "branch" verdicts, which would have
-        # made it fail -- so its result is reusable anywhere, and it subsumes the type-level scan.
-        # Failed refutations are not memoized, since they can be an artifact of the marker on the
-        # current path. Without this memo, constant-recursion towers re-analyze and re-refute the
-        # identical (sig, constants) on every re-scan, which is quadratic in tower depth.
-        (:refuted, callsig, ck) in seen && return NOBRANCH
-    end
+    argtypes = with_consts ?
+        Any[fval !== nothing ? Core.Const(fval) : _first_param(callsig), arglat...] : nothing
+    ck = argtypes === nothing ? nothing : _const_key(argtypes)
+    # Successful refutations are memoized: a refutation that succeeded is path-independent -- the
+    # cycle marker below can only inject conservative "branch" verdicts, which would have made it
+    # fail -- so its result is reusable anywhere, and it subsumes the type-level scan. Failed
+    # refutations are not memoized, since they can be an artifact of the marker on the current
+    # path. Without this memo, constant-recursion towers re-analyze and re-refute the identical
+    # (sig, constants) on every re-scan, which is quadratic in tower depth.
+    ck !== nothing && (:refuted, callsig, ck) in seen && return NOBRANCH
     # The type recursion is the source of truth. If it finds no branch, we are done.
     res = _hasbranching(callsig, seen, depth + 1)
     res == NOBRANCH && return NOBRANCH
@@ -261,7 +258,7 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
     # reverse, and it is skipped entirely (leaving the branch reported) when there are no constant
     # arguments, when the compiler internals do not cooperate, or when the constant inference
     # errors.
-    if res == BRANCH && with_consts
+    if res == BRANCH && ck !== nothing
         # A transient path marker breaks refutation cycles: a constant-recursive callee whose
         # folded body reaches the same (sig, constants) again must not re-enter refutation (it
         # previously recursed until stack overflow, which the error handling then converted into
