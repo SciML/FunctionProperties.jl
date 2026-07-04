@@ -178,3 +178,22 @@ tbp = TwoBufferParams([1.0], [2.0])
 if FunctionProperties._const_prop_capable()
     @test !FunctionProperties.hasbranching(rhs_const_index, tbp)   # constant index folds away
 end
+
+# Refutation must be per-call-site: the same widened callsig can be refutable at one call site
+# (constant index) and not at another (dynamic index). Memoizing the sig on the true-returning
+# chain produced order-dependent false negatives (const-site first suppressed the dynamic site).
+rhs_mixed_cd(p, i) = pick_buffer(p, 1)[1] + pick_buffer(p, i)[1]
+rhs_mixed_dc(p, i) = pick_buffer(p, i)[1] + pick_buffer(p, 1)[1]
+@test FunctionProperties.hasbranching(rhs_mixed_cd, tbp, 2)
+@test FunctionProperties.hasbranching(rhs_mixed_dc, tbp, 2)
+
+# A constant-recursive callee must not send the refutation into unbounded recursion (previously a
+# stack overflow inside inference, which the error handling then converted into a false negative).
+# The refutation cycle is broken conservatively, so the branch stays reported -- and quickly.
+recur_const(p, n) = n == 0 ? p.a : recur_const(p, 5)
+rhs_recur(p) = recur_const(p, 5)[1]
+mutual_a(p, n) = n == 0 ? p.a : mutual_b(p, 4)
+mutual_b(p, n) = n == 1 ? p.b : mutual_a(p, 3)
+rhs_mutual(p) = mutual_a(p, 5)[1]
+@test FunctionProperties.hasbranching(rhs_recur, tbp)
+@test FunctionProperties.hasbranching(rhs_mutual, tbp)

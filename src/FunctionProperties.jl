@@ -75,6 +75,13 @@ function hasbranching(f, x...)
     return _hasbranching(sig, Set{Any}(), 0)
 end
 
+# `seen` serves two roles: cycle breaking for sigs on the current DFS path, and memoization of
+# sigs proven branch-free. A `false` result is sound to memoize globally -- the scan uses widened
+# argument types, and constants can only fold branches away, so a type-level `false` holds for
+# every call site. A `true` result is NOT memoized: sigs on a true-returning chain are popped
+# before returning, because constant refutation may flip that `true` to `false` at one call site
+# while another call site of the same sig (with different or no constants) must still re-analyze
+# and report the branch. Leaving them in `seen` produced order-dependent false negatives.
 function _hasbranching(@nospecialize(sig), seen, depth)
     depth > RECURSION_LIMIT && return false
     sig in seen && return false
@@ -91,7 +98,10 @@ function _hasbranching(@nospecialize(sig), seen, depth)
         # Generated functions that were not expanded come back as `Method`, not `CodeInfo`;
         # there is no body to scan, so treat them as leaves.
         ci isa Core.CodeInfo || continue
-        _scan_codeinfo(ci, seen, depth) && return true
+        if _scan_codeinfo(ci, seen, depth)
+            delete!(seen, sig)
+            return true
+        end
     end
     return false
 end
@@ -209,24 +219,42 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
     # internals do not cooperate, or when the constant inference errors.
     if _const_prop_capable() && any(x -> x isa Core.Const, arglat)
         funclat = fval !== nothing ? Core.Const(fval) : _first_param(callsig)
-        _const_refutes(callsig, Any[funclat, arglat...], depth) && return false
+        argtypes = Any[funclat, arglat...]
+        # A transient path marker breaks refutation cycles: a constant-recursive callee whose
+        # folded body reaches the same (sig, constants) again must not re-enter refutation (it
+        # previously recursed until stack overflow, which the error handling then converted into
+        # "refuted" -- a false negative). Hitting the marker leaves the branch reported.
+        key = (:refute, callsig, _const_key(argtypes))
+        if !(key in seen)
+            push!(seen, key)
+            refuted = try
+                _const_refutes(callsig, argtypes, seen, depth + 1)
+            finally
+                delete!(seen, key)
+            end
+            refuted && return false
+        end
     end
     return true
 end
 
-# Re-infer `sig` with the constant lattice elements preserved (no optimizer, so no library or
-# structural branches are inlined into view) and report whether the result is branch-free. Returns
+# Re-infer `sig` with the constant lattice elements preserved and report whether the result is
+# branch-free. The scan shares the caller's `seen`, so proven-branch-free sigs are reused and
+# nested refutations bump `depth`, keeping the recursion bounded by `RECURSION_LIMIT`. Returns
 # `false` -- i.e. does not refute -- whenever the constant inference is unavailable, fails, or leaves
 # a branch, so an inability to fold never suppresses a genuine branch.
-function _const_refutes(@nospecialize(sig), argtypes, depth)
+function _const_refutes(@nospecialize(sig), argtypes, seen, depth)
+    depth > RECURSION_LIMIT && return false
     src = _const_infer_src(sig, argtypes)
     src isa Core.CodeInfo || return false
     return try
-        !_scan_codeinfo(src, Set{Any}(), depth)
+        !_scan_codeinfo(src, seen, depth)
     catch
         false
     end
 end
+
+_const_key(argtypes) = map(x -> x isa Core.Const ? (true, x.val) : (false, x), argtypes)
 
 _first_param(@nospecialize(sig)) =
     (sig isa DataType && !isempty(sig.parameters)) ? sig.parameters[1] : Any
@@ -266,12 +294,16 @@ end
 # ---- constant-argument inference -----------------------------------------------------------
 
 # Run inference on `sig` with the given argument lattice (some `Core.Const`) preserved, and return
-# the inferred (unoptimized) `CodeInfo`, or `nothing` if the compiler internals do not cooperate.
-# The `InferenceState` construction and the inferred-source location differ across Julia versions:
-# 1.12 accepts `InferenceState(result, cache_mode, interp)` and exposes the body on `result.src`,
-# while 1.13 wants the uninferred source passed explicitly and exposes the body on `frame.src`. We
-# try the explicit-source form first (works on both) with the non-caching `:volatile` mode, then
-# fall back, and read whichever of `frame.src`/`result.src` is a `CodeInfo`.
+# the inferred `CodeInfo`, or `nothing` if the compiler internals do not cooperate. The `:no`
+# (non-caching) mode is tried first because it skips the optimizer on 1.12 and 1.13, yielding the
+# unoptimized inferred body where a constant-decided branch appears as a `GotoIfNot` with a
+# `Core.Const` condition and nothing is inlined into view; it also writes nothing into the
+# inference cache. `:volatile` is kept as a fallback for compiler versions where `:no` does not
+# produce a scannable body -- under it the optimizer may run, which is still sound for refutation
+# (inlined library branches can only make refutation fail, i.e. leave the branch reported) but is
+# not the preferred shape. The `InferenceState` construction differs across versions (1.13 wants
+# the uninferred source passed explicitly), so the explicit-source form is tried before the
+# 3-argument form, and the body is read from whichever of `frame.src`/`result.src` is a `CodeInfo`.
 function _const_infer_src(@nospecialize(sig), argtypes)
     m = try
         Base.which(sig)
@@ -290,23 +322,24 @@ function _const_infer_src(@nospecialize(sig), argtypes)
         nothing
     end
     # A fresh `InferenceResult`/`InferenceState` per attempt: an `InferenceResult` cannot be
-    # re-inferred once used.
-    for build in (
-            interp -> src0 isa Core.CodeInfo ?
-                      _CC.InferenceState(_new_result(mi, argtypes, overridden), src0, :volatile, interp) :
-                      nothing,
-            interp -> _CC.InferenceState(_new_result(mi, argtypes, overridden), :volatile, interp),
-        )
-        src = try
-            interp = _CC.NativeInterpreter()
-            frame = build(interp)
-            frame === nothing && continue
-            _CC.typeinf(interp, frame)
-            _inferred_src(frame)
-        catch
-            nothing
+    # re-inferred once used. `copy(src0)` for the same reason -- inference mutates the source.
+    for cache_mode in (:no, :volatile)
+        for explicit_src in (true, false)
+            explicit_src && !(src0 isa Core.CodeInfo) && continue
+            src = try
+                interp = _CC.NativeInterpreter()
+                frame = explicit_src ?
+                    _CC.InferenceState(
+                        _new_result(mi, argtypes, overridden), copy(src0), cache_mode, interp) :
+                    _CC.InferenceState(_new_result(mi, argtypes, overridden), cache_mode, interp)
+                frame === nothing && continue
+                _CC.typeinf(interp, frame)
+                _inferred_src(frame)
+            catch
+                nothing
+            end
+            src isa Core.CodeInfo && return src
         end
-        src isa Core.CodeInfo && return src
     end
     return nothing
 end
