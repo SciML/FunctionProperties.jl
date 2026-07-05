@@ -334,3 +334,61 @@ let rng = Random.Xoshiro(0x1517)
         lin_truth || @test !cert
     end
 end
+
+# ---------------------------------------------------------------------------------------------
+# `isautonomous`: certified independence from the trailing (time) argument.
+@test isautonomous((u, p, t) -> p[1] * u[1], [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> u[1] * sin(t), [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> u[1] + t, [1.0], [2.0], 0.0)
+# `t * 0` is genuinely independent but not certified (no cancellation modeling): conservative.
+@test !isautonomous((u, p, t) -> u[1] + t * 0.0, [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> t > 0 ? u[1] : -u[1], [1.0], [2.0], 1.0)
+
+# `issmooth`: certified composition of real-analytic primitives on the domain interior.
+@test issmooth((u, p, t) -> exp(u[1]) * sin(t), [1.0], nothing, 0.0)
+@test issmooth(x -> sqrt(x + 1.0) * tanh(x), 1.0)
+@test issmooth(u -> sum(abs2, u), [1.0, 2.0])
+@test !issmooth(u -> abs(u[1]), [1.0])
+@test !issmooth(u -> max.(u, 0.0), [1.0])                 # kink through broadcast machinery
+@test !issmooth(x -> mod(x, 2.0), 1.0)
+@test !issmooth(x -> x > 0 ? x : zero(x), 1.0)            # branch blocks the certificate
+
+# `hasrandomness`: any statically reachable Random-stdlib call, however nested.
+rng_leaf(v) = v .+ randn(length(v))
+rng_wrap(v) = rng_leaf(v) .* 2
+@test hasrandomness(u -> u .+ rand(), [1.0])
+@test hasrandomness(rng_wrap, [1.0])
+@test hasrandomness(u -> Random.shuffle(u), [1.0, 2.0])
+@test !hasrandomness(u -> 2 .* u .+ 1, [1.0])
+@test !hasrandomness((u, p, t) -> p[1] * u[1], [1.0], [2.0], 0.0)
+
+# `hasmutation`: per-argument write certification for in-place right-hand sides.
+mut_rhs!(du, u, p, t) = (du .= p[1] .* u; nothing)
+sneaky_rhs!(du, u, p, t) = (u[1] = 0.0; du .= u; nothing)
+@test hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 1)
+@test !hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+@test !hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 3)
+@test hasmutation(sneaky_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+@test !hasmutation((u, p) -> u .+ p, [1.0], [2.0])                 # out-of-place: nothing written
+# Aliasing through another argument withholds the certificate.
+alias_u = [1.0]
+@test hasmutation((a, b) -> (b[1] = 5.0; nothing), alias_u, alias_u; arg = 1)
+# Non-isbits element arrays cannot be certified (interior mutation is invisible to the probe).
+@test hasmutation(u -> (u[1][1] = 0.0; nothing), [[1.0]]; arg = 1)
+# Witness oracle: a certified-unmutated argument must be exactly unchanged by a real call.
+let du = zeros(2), u = [1.0, 2.0], u0 = copy(u)
+    @test !hasmutation(mut_rhs!, du, u, [3.0], 0.0; arg = 2)
+    mut_rhs!(du, u, [3.0], 0.0)
+    @test u == u0
+end
+
+# `ispure` / `isinferable`: thin certificates over compiler analyses.
+if FunctionProperties._effects_capable()
+    @test ispure(x -> 2x + 1, 1.0)
+    @test !ispure(x -> x + rand(), 1.0)
+    const IMPURE_ACC = Ref(0.0)
+    @test !ispure(x -> (IMPURE_ACC[] += x; x), 1.0)
+end
+@test isinferable(x -> 2x, 1.0)
+@test isinferable((u, p, t) -> p[1] .* u, [1.0], [2.0], 0.0)
+@test !isinferable(x -> x > 0 ? 1 : 2.0, 1.0)

@@ -16,6 +16,8 @@ using SciMLTesting, FunctionProperties, JET, Test
 #   - `code_typed_by_type` is the non-public typed-IR entry point (`Base.code_typed_by_type`),
 #     and `specialize_method`/`get_world_counter` are the reflection pieces needed to build a
 #     method instance for constant re-inference.
+#   - `infer_effects` and the `is_consistent`/`is_effect_free` queries are the effects system
+#     wrapped by `ispure`.
 #   - `Compiler`/`NativeInterpreter`/`InferenceResult`/`InferenceState`/`typeinf`/
 #     `retrieve_code_info` are the abstract interpreter: there is no public API for "infer this
 #     method with constant argument types". This dependency is deliberately confined behind a
@@ -36,6 +38,7 @@ run_qa(
                 :Typeof, :Argument, :CodeInfo, :Compiler, :Const, :GotoNode,
                 :InferenceResult, :InferenceState, :MethodInstance, :NativeInterpreter,
                 :NewvarNode, :PartialStruct, :ReturnNode, :SSAValue, :SlotNumber, :TwicePrecision,
+                :infer_effects, :is_consistent, :is_effect_free,
                 :code_typed_by_type, :get_world_counter, :retrieve_code_info,
                 :specialize_method, :svec, :typeinf,
             ),
