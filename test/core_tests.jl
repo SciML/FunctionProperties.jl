@@ -392,3 +392,81 @@ end
 @test isinferable(x -> 2x, 1.0)
 @test isinferable((u, p, t) -> p[1] .* u, [1.0], [2.0], 0.0)
 @test !isinferable(x -> x > 0 ? 1 : 2.0, 1.0)
+
+# ---------------------------------------------------------------------------------------------
+# Property-suite hardening: each case below reproduces a demonstrated defect (false certificate
+# or missed detection) or an adversarial probe from the hardening battery.
+
+# Text rendering is a value channel: `string(t)` completed with a fixed type-printed string,
+# laundering the traced value into untraced data and earning false certificates.
+@test !isautonomous((u, p, t) -> u .+ Float64(codeunit(string(t), 1)), [1.0], nothing, 0.5)
+@test !issmooth(x -> x + Float64(codeunit(string(x), 1)), 0.5)
+@test !isautonomous((u, p, t) -> u .* length("$t"), [1.0], nothing, 0.5)
+
+# Function values in argument position never appear as visible calls: `rand` is Base-owned
+# (Random only extends it), so it is matched by name; user singletons are walked by method;
+# closures with captures are conservatively random.
+@test hasrandomness(v -> v .+ rand.(), [1.0])
+@test hasrandomness(v -> map(x -> x + rand(), v), [1.0])
+@test hasrandomness(v -> v .+ rand(Random.Xoshiro(1)), [1.0])
+@test !hasrandomness(v -> map(x -> x + 1.0, v), [1.0])
+@test !hasrandomness(v -> sum(abs2, v), [1.0])
+
+# Aliasing beyond `===`: NamedTuple/struct fields and memory-sharing views must all withhold
+# the non-mutation certificate, while a legitimate `nothing` argument must not.
+let u = [1.0, 2.0]
+    @test hasmutation((a, p) -> (p.cache[1] = 9.0; nothing), u, (cache = u,); arg = 1)
+    @test hasmutation((a, v) -> (v[1] = 7.0; nothing), u, view(u, :); arg = 1)
+    @test !hasmutation((du, uu, p, t) -> (du .= uu; nothing), zeros(2), u, nothing, 0.0; arg = 2)
+end
+@test hasmutation((a) -> (fill!(a, 0.0); nothing), [1.0, 2.0]; arg = 1)
+@test hasmutation((a, b) -> (copyto!(a, b); nothing), [1.0, 2.0], [3.0, 4.0]; arg = 1)
+@test hasmutation((a) -> (empty!(a); nothing), [1.0, 2.0]; arg = 1)         # unsupported: conservative
+@test hasmutation((a) -> (view(a, 1:1)[1] = 0.0; nothing), [1.0, 2.0]; arg = 1)
+@test hasmutation((a) -> (a[1] += 1.0; a[1] -= 1.0; nothing), [1.0, 2.0]; arg = 1)
+@test !hasmutation((x, y) -> x + y, 1.0, 2.0; arg = 1)                       # immutables trivially clean
+@test isautonomous((u, p, t) -> u .+ zero(t), [1.0], nothing, 0.5)           # zero(t) is t-independent
+@test !isautonomous((u, p, t) -> u .+ Ref(t)[], [1.0], nothing, 0.5)
+@test issmooth(x -> (x + 2.0)^2.5, 1.0)
+@test !issmooth(x -> sign(x) * x^2, 1.0)
+
+# Fuzz with runtime witness oracles: certified autonomy must mean exact agreement across
+# different `t`, and a certified-unmutated argument must be exactly unchanged by a real call.
+let rng = Random.Xoshiro(0x0707)
+    for k in 1:25
+        uses_t = rand(rng, Bool)
+        op = rand(rng, 1:3)
+        fname = Symbol(:fzham_a, k)
+        body = uses_t ?
+            (op == 1 ? :(u .+ t) : op == 2 ? :(u .* sin(t)) : :(u .+ t^2)) :
+            (op == 1 ? :(u .+ p[1]) : op == 2 ? :(u .* cos(p[1])) : :(u .+ p[1]^2))
+        @eval $fname(u, p, t) = $body
+        f = @eval $fname
+        cert = isautonomous(f, [1.0], [2.0], 0.3)
+        uses_t && @test !cert
+        cert && @test f([1.0], [2.0], 0.3) == f([1.0], [2.0], 1.7)
+    end
+    for k in 1:25
+        writes_u = rand(rng, Bool)
+        fname = Symbol(:fzham_m, k)
+        body = writes_u ? :(
+                begin
+                    du .= p[1] .* uu; uu[1] = 0.0; nothing
+                end
+            ) :
+            :(
+                begin
+                    du .= p[1] .* uu; nothing
+                end
+            )
+        @eval $fname(du, uu, p, t) = $body
+        f = @eval $fname
+        cert_mut = hasmutation(f, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+        writes_u && @test cert_mut
+        if !cert_mut
+            uu = [1.0, 2.0]; uu0 = copy(uu)
+            f(zeros(2), uu, [3.0], 0.0)
+            @test uu == uu0
+        end
+    end
+end

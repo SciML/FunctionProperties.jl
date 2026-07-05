@@ -64,6 +64,11 @@ function _rng_recurse_call(@nospecialize(stmt), ci, seen, depth)
                 getfield(mi, :def).specTypes : nothing
             )
         callsig === nothing && return false
+        if callsig isa DataType
+            for at in callsig.parameters
+                _rng_function_arg(at, seen, depth) && return true
+            end
+        end
         return _rng_visit(callsig, seen, depth)
     end
 
@@ -83,12 +88,51 @@ function _rng_recurse_call(@nospecialize(stmt), ci, seen, depth)
                 return false
             end
         end
+        any(at -> _rng_function_arg(at, seen, depth), argtypes) && return true
         return _rng_visit(Tuple{ftype, argtypes...}, seen, depth)
     end
     ftype, _ = _resolve_callee(call.args[1], ci)
     ftype === nothing && return false
     argtypes = Any[_value_type(a, ci) for a in @view call.args[2:end]]
+    any(at -> _rng_function_arg(at, seen, depth), argtypes) && return true
     return _rng_visit(Tuple{ftype, argtypes...}, seen, depth)
+end
+
+# A function VALUE passed as an argument -- `rand.()`, `map(x -> x + rand(), u)` -- never
+# appears as a visible call in the caller's IR, so the callee walk alone misses it
+# (demonstrated with both shapes). Poison Random-owned function arguments directly, walk the
+# methods of user-defined singleton functions and closures, and treat closures with captures
+# (no singleton instance to inspect) as "could be random".
+const _RNG_NAMES = (
+    :rand, :randn, :randexp, :rand!, :randn!, :randexp!, :randstring, :randcycle,
+    :randcycle!, :randperm, :randperm!, :randsubseq, :randsubseq!, :shuffle, :shuffle!,
+    :bitrand, :seed!,
+)
+
+function _rng_function_arg(@nospecialize(at), seen, depth)
+    at isa DataType && at <: Function || return false
+    root = Base.moduleroot(parentmodule(at))
+    nameof(root) === :Random && return true
+    if isdefined(at, :instance) && at.instance isa Function
+        # `rand`/`randn` are Base-owned functions that the Random stdlib merely extends, so
+        # ownership rules miss them: match the family by name (a user function that shadows one
+        # of these names is flagged too, erring conservative).
+        nameof(at.instance) in _RNG_NAMES && return true
+        if root === Base || root === Core ||
+                (Base.pkgdir(root) !== nothing && startswith(Base.pkgdir(root), Sys.STDLIB))
+            return false
+        end
+        for meth in methods(at.instance)
+            _uses_randomness(meth.sig, seen, depth + 1) && return true
+        end
+        return false
+    end
+    if root === Base || root === Core ||
+            (Base.pkgdir(root) !== nothing && startswith(Base.pkgdir(root), Sys.STDLIB))
+        return false
+    end
+    # A user closure with captured state has no singleton instance to inspect: conservative.
+    return true
 end
 
 function _rng_visit(@nospecialize(callsig), seen, depth)

@@ -90,6 +90,10 @@ end
 for fn in (:isnan, :isinf, :isfinite, :iszero, :isone, :signbit, :isinteger)
     @eval Base.$fn(a::PolyDegree) = throw(DegreeTracerError($(QuoteNode(fn))))
 end
+# Text rendering is a value channel: `string(t)` would otherwise complete with a fixed
+# type-printed string, laundering the traced value into untraced data (demonstrated:
+# `u .+ Float64(codeunit(string(t), 1))` earned a false autonomy certificate).
+Base.show(io::IO, ::PolyDegree) = throw(DegreeTracerError(:show))
 for fn in (:floor, :ceil, :trunc, :round)
     @eval Base.$fn(a::PolyDegree) = throw(DegreeTracerError($(QuoteNode(fn))))
 end

@@ -75,6 +75,8 @@ end
 for fn in (:isnan, :isinf, :isfinite, :iszero, :isone, :signbit, :isinteger)
     @eval Base.$fn(::SmoothProbe) = throw(SmoothProbeError($(QuoteNode(fn))))
 end
+# Text rendering is a value channel (see the equivalent guard on `PolyDegree`).
+Base.show(io::IO, ::SmoothProbe) = throw(SmoothProbeError(:show))
 
 _smooth_seed(x::Real) = SmoothProbe()
 _smooth_seed(x::AbstractArray{<:Real}) = map(_ -> SmoothProbe(), x)

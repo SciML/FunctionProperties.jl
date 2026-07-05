@@ -18,6 +18,9 @@ using SciMLTesting, FunctionProperties, JET, Test
 #     method instance for constant re-inference.
 #   - `infer_effects` and the `is_consistent`/`is_effect_free` queries are the effects system
 #     wrapped by `ispure`.
+#   - `mightalias` guards the non-mutation certificate against memory-sharing views; array
+#     aliasing detection has no public equivalent (its primitive, `dataids`, is equally
+#     non-public).
 #   - `Compiler`/`NativeInterpreter`/`InferenceResult`/`InferenceState`/`typeinf`/
 #     `retrieve_code_info` are the abstract interpreter: there is no public API for "infer this
 #     method with constant argument types". This dependency is deliberately confined behind a
@@ -38,7 +41,7 @@ run_qa(
                 :Typeof, :Argument, :CodeInfo, :Compiler, :Const, :GotoNode,
                 :InferenceResult, :InferenceState, :MethodInstance, :NativeInterpreter,
                 :NewvarNode, :PartialStruct, :ReturnNode, :SSAValue, :SlotNumber, :TwicePrecision,
-                :infer_effects, :is_consistent, :is_effect_free,
+                :infer_effects, :is_consistent, :is_effect_free, :mightalias,
                 :code_typed_by_type, :get_world_counter, :retrieve_code_info,
                 :specialize_method, :svec, :typeinf,
             ),

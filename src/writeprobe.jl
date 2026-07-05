@@ -8,6 +8,10 @@ mutable struct _WriteFlag
     hit::Bool
 end
 
+# Sentinel for "this argument cannot be probed"; a dedicated type so that a legitimate
+# `nothing` argument (ubiquitous as a parameter placeholder) is not mistaken for it.
+struct _ProbeFail end
+
 struct _WriteProbe{T, N, A <: AbstractArray{T, N}} <: AbstractArray{T, N}
     data::A
     flag::_WriteFlag
@@ -51,8 +55,8 @@ function hasmutation(f, x...; arg = (:))
     probed = ntuple(length(x)) do i
         xi = x[i]
         if i in idx && xi isa AbstractArray
-            isbitstype(eltype(xi)) || return nothing
-            _shallow_alias(xi, x, i) && return nothing
+            isbitstype(eltype(xi)) || return _ProbeFail()
+            _shallow_alias(xi, x, i) && return _ProbeFail()
             flag = _WriteFlag(false)
             push!(flags, flag)
             _WriteProbe(copy(xi), flag)
@@ -60,7 +64,7 @@ function hasmutation(f, x...; arg = (:))
             xi
         end
     end
-    any(isnothing, probed) && return true
+    any(x -> x isa _ProbeFail, probed) && return true
     ok = try
         f(probed...)
         true
@@ -73,12 +77,27 @@ end
 function _shallow_alias(target, args, self)
     for (j, a) in enumerate(args)
         j == self && continue
-        a === target && return true
-        if a isa Union{Tuple, AbstractArray}
-            for el in a
-                el === target && return true
-            end
+        _aliases(a, target) && return true
+        for el in _children(a)
+            _aliases(el, target) && return true
         end
     end
     return false
+end
+
+# `===` alone misses memory-sharing wrappers -- a `view(u, :)` argument aliased the probed
+# array while comparing unequal -- so arrays are compared by `Base.mightalias` (shared
+# `dataids`), everything else by identity.
+_aliases(@nospecialize(a), target) =
+    a === target || (a isa AbstractArray && Base.mightalias(a, target))
+
+# One structural level of an argument: elements of collections, fields of structs (including
+# NamedTuples -- a `(cache = u,)` argument aliased the probed array without being seen).
+function _children(@nospecialize(a))
+    a isa Union{Tuple, AbstractArray, NamedTuple} && return values(a)
+    if isstructtype(typeof(a)) && !isbitstype(typeof(a))
+        n = fieldcount(typeof(a))
+        return (isdefined(a, i) ? getfield(a, i) : nothing for i in 1:n)
+    end
+    return ()
 end
