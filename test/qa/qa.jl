@@ -21,6 +21,9 @@ using SciMLTesting, FunctionProperties, JET, Test
 #     method with constant argument types". This dependency is deliberately confined behind a
 #     functional capability probe (`_const_prop_capable`) so the package degrades to the plain
 #     type scan wherever these internals change shape.
+#   - `TwicePrecision` appears only in a constructor disambiguation that Aqua requires: Base
+#     defines `(::Type{T<:Number})(::Base.TwicePrecision)`, which is ambiguous against the
+#     degree tracer's generic constructor.
 # All of these are Core/Base compiler-introspection internals with no public API, so they are
 # ignored in the public-API checks.
 run_qa(
@@ -32,7 +35,7 @@ run_qa(
             ignore = (
                 :Typeof, :Argument, :CodeInfo, :Compiler, :Const, :GotoNode,
                 :InferenceResult, :InferenceState, :MethodInstance, :NativeInterpreter,
-                :NewvarNode, :PartialStruct, :ReturnNode, :SSAValue, :SlotNumber,
+                :NewvarNode, :PartialStruct, :ReturnNode, :SSAValue, :SlotNumber, :TwicePrecision,
                 :code_typed_by_type, :get_world_counter, :retrieve_code_info,
                 :specialize_method, :svec, :typeinf,
             ),

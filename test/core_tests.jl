@@ -275,3 +275,62 @@ wrap_cmp(x, t) = x > t ? x : t
 @test FunctionProperties.hasbranching(Base.Fix1(wrap_cmp, 0.0), 1.0)
 @test FunctionProperties.hasbranching(Base.Fix2(wrap_cmp, 0.0), 1.0)
 @test !FunctionProperties.hasbranching(Base.Fix2(*, 2.0), 1.0)
+
+# ---------------------------------------------------------------------------------------------
+# `islinear` / `isquadratic`: degree certification by tracer-type abstract interpretation.
+# `true` is a proof under real arithmetic; `false` is only "not proven".
+A_lin = [1.0 2.0; 3.0 4.0]
+@test islinear((u, p, t) -> p[1] * u[1] + p[2], [1.0], [2.0, 3.0], 0.0)
+@test islinear(u -> A_lin * u, [1.0, 2.0])                    # generic matmul certifies
+@test islinear(u -> A_lin * u .+ 1.0, [1.0, 2.0])
+@test islinear(x -> 2x + 3, 1.0)
+@test islinear(x -> 0.0, 1.0)                                 # constants are affine
+@test !islinear((u, p, t) -> u[1] * u[2], [1.0, 2.0], nothing, 0.0)
+@test isquadratic((u, p, t) -> u[1] * u[2] + p[1] * u[1], [1.0, 2.0], [3.0], 0.0)
+@test isquadratic(x -> (x + 1.0)^2, 1.0)
+@test !islinear(x -> (x + 1.0)^2, 1.0)
+@test !isquadratic(x -> x^3, 1.0)
+@test !isquadratic(u -> exp(u[1]), [1.0])
+@test !islinear(u -> max.(u, 0.0), [1.0])                     # tracer aborts on comparison
+@test !islinear(x -> x > 0 ? x : zero(x), 1.0)                # relu-style branch
+@test !islinear(x -> x * x - x * x + x, 1.0)                  # cancellation: conservative, documented
+# `wrt` semantics: joint degree in the tracked arguments, others held fixed.
+@test islinear((u, v) -> u[1] + v[1], [1.0], [1.0]; wrt = (1, 2))
+@test !islinear((u, v) -> u[1] * v[1], [1.0], [1.0]; wrt = (1, 2))
+@test islinear((u, p) -> u[1] * p[1], [1.0], [2.0])           # linear in u for fixed p
+@test islinear((u, p) -> u[1] * p[1], [1.0], [2.0]; wrt = :) == false
+# A branch on an UNTRACKED argument still blocks certification (`hasbranching` guard): the
+# function is linear in `u` for the given `p`, but the certificate is conservatively withheld.
+@test !islinear((u, p, t) -> p[1] > 0 ? u[1] : 2u[1], [1.0], [1.0], 0.0)
+# In-place right-hand sides via the closure pattern.
+rhs_ip!(du, u, p, t) = (du[1] = p[1] * u[1]; du[2] = u[1] + u[2]; du)
+@test islinear(u -> rhs_ip!(similar(u), u, [2.0], 0.0), [1.0, 2.0])
+# Certified results are plain Bools; the tracer type does not leak.
+@test islinear(x -> 2x, 1.0) isa Bool
+
+# Ground-truth cross-validation: every `true` linear certificate must have exactly vanishing
+# second finite differences over exact rational arithmetic (and third differences for quadratic
+# certificates) at random rational points -- a soundness check independent of the tracer rules.
+let rng = Random.Xoshiro(0x1517)
+    d2(f, x, h1, h2) = f(x + h1 + h2) - f(x + h1) - f(x + h2) + f(x)
+    corpusf = [
+        (x -> 3 // 2 * x + 7, true),
+        (x -> x * (x + 1) - x * x, true),        # cancellation: genuinely linear...
+        (x -> (x + 2) * 5 - 3, true),
+        (x -> x^2 + x, false),
+        (x -> x^3 - x, false),
+        (x -> x * x * 2 + 1, false),
+    ]
+    for (f, lin_truth) in corpusf
+        cert = islinear(f, 1.0)
+        # soundness: a certificate implies exact linearity at random rational probes
+        if cert
+            for _ in 1:3
+                x, h1, h2 = (Rational{BigInt}(rand(rng, -99:99)) // rand(rng, 1:9) for _ in 1:3)
+                @test iszero(d2(f, x, h1, h2))
+            end
+        end
+        # no false certificates on the known-nonlinear corpus
+        lin_truth || @test !cert
+    end
+end
