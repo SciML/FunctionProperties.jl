@@ -144,18 +144,134 @@ splat_forward_free(args...) = splat_target_free(args...)
 @test !FunctionProperties.hasbranching(splat_forward_free, -1.0)
 
 # ---------------------------------------------------------------------------------------------
-# `is_leaf_sig`: signature-level exemptions for value-independent plumbing.
+# Constant-decided branches (value-independent) must not be reported.
 #
 # A branch on an integer index that selects a buffer (the MTK `getindex(::MTKParameters, ::Int)`
 # pattern) is value-independent: each real call site passes a literal index that constant-folds the
-# branch, but the recursion only sees the widened `Int` and so reports it. Such a call can be marked
-# branch-free by signature.
-struct TwoBuffers
-    a::Float64
-    b::Float64
+# branch, but ordinary recursion widens the `Int` and so reports it. The constant-argument recursion
+# re-infers the callee with the constant preserved so the branch folds away — where the running
+# Julia's compiler cooperates (`_const_prop_capable()`). It stays conservative: a genuinely
+# value-dependent branch, and a dynamic (non-constant) index, are always reported.
+struct TwoBufferParams
+    a::Vector{Float64}
+    b::Vector{Float64}
 end
-@noinline select_buffer(c::TwoBuffers, i::Int) = i == 1 ? c.a : c.b
-rhs_with_plumbing(u, p, t) = select_buffer(p, 1) * u
-@test FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
-FunctionProperties.is_leaf_sig(::Type{<:Tuple{typeof(select_buffer), TwoBuffers, Vararg}}) = true
-@test !FunctionProperties.hasbranching(rhs_with_plumbing, 1.0, TwoBuffers(1.0, 2.0), 0.0)
+@generated function pick_buffer(p::TwoBufferParams, idx::Int)
+    return quote
+        if idx == 1
+            return p.a
+        elseif idx == 2
+            return p.b
+        else
+            throw(BoundsError(p, idx))
+        end
+    end
+end
+cp_relu(x) = x > 0 ? x : zero(x)
+rhs_const_index(p) = @inbounds pick_buffer(p, 1)[1]
+rhs_dynamic_index(p, i) = @inbounds pick_buffer(p, i)[1]
+rhs_real_branch(u, p) = cp_relu(u) + @inbounds pick_buffer(p, 1)[1]
+tbp = TwoBufferParams([1.0], [2.0])
+
+@test FunctionProperties.hasbranching(rhs_real_branch, 1.0, tbp)   # genuine branch: always reported
+@test FunctionProperties.hasbranching(rhs_dynamic_index, tbp, 1)   # dynamic index: always reported
+if FunctionProperties._const_prop_capable()
+    @test !FunctionProperties.hasbranching(rhs_const_index, tbp)   # constant index folds away
+end
+
+# Refutation must be per-call-site: the same widened callsig can be refutable at one call site
+# (constant index) and not at another (dynamic index). Memoizing the sig on the true-returning
+# chain produced order-dependent false negatives (const-site first suppressed the dynamic site).
+rhs_mixed_cd(p, i) = pick_buffer(p, 1)[1] + pick_buffer(p, i)[1]
+rhs_mixed_dc(p, i) = pick_buffer(p, i)[1] + pick_buffer(p, 1)[1]
+@test FunctionProperties.hasbranching(rhs_mixed_cd, tbp, 2)
+@test FunctionProperties.hasbranching(rhs_mixed_dc, tbp, 2)
+
+# A constant-recursive callee must not send the refutation into unbounded recursion (previously a
+# stack overflow inside inference, which the error handling then converted into a false negative).
+# The refutation cycle is broken conservatively, so the branch stays reported -- and quickly.
+recur_const(p, n) = n == 0 ? p.a : recur_const(p, 5)
+rhs_recur(p) = recur_const(p, 5)[1]
+mutual_a(p, n) = n == 0 ? p.a : mutual_b(p, 4)
+mutual_b(p, n) = n == 1 ? p.b : mutual_a(p, 3)
+rhs_mutual(p) = mutual_a(p, 5)[1]
+@test FunctionProperties.hasbranching(rhs_recur, tbp)
+@test FunctionProperties.hasbranching(rhs_mutual, tbp)
+
+# A value-dependent branch at the base of a constant-recursion tower must never be lost, even when
+# the tower exceeds the refutation depth budget: exhausting the budget fails refutation ("cannot
+# verify" reports the branch) rather than assuming a leaf. Previously the depth backstop returned
+# branch-free, which a refutation cascade silently propagated into a false negative.
+hidden_base(p, n, x) = n == 0 ? (x > 0 ? p.a : p.b) : hidden_base(p, n - 1, x)
+rhs_hidden5(p, x) = hidden_base(p, 5, x)[1]
+rhs_hidden400(p, x) = hidden_base(p, 400, x)[1]
+@test FunctionProperties.hasbranching(rhs_hidden5, tbp, 0.5)
+@test FunctionProperties.hasbranching(rhs_hidden400, tbp, 0.5)
+
+# Constant-decided recursion folds fully below the depth budget, and is conservatively reported
+# above it. A diverging constant recursion (`n + 1`) must terminate via the depth budget.
+cnt_const(p, n) = n == 0 ? p.a : cnt_const(p, n - 1)
+rhs_cnt5(p) = cnt_const(p, 5)[1]
+rhs_cnt400(p) = cnt_const(p, 400)[1]
+asc_const(p, n) = n == 0 ? p.a : asc_const(p, n + 1)
+rhs_asc(p) = asc_const(p, 5)[1]
+if FunctionProperties._const_prop_capable()
+    @test !FunctionProperties.hasbranching(rhs_cnt5, tbp)
+end
+@test FunctionProperties.hasbranching(rhs_cnt400, tbp)
+@test FunctionProperties.hasbranching(rhs_asc, tbp)
+
+# The refutation path marker keys non-isbits constants by object identity: hashing the value
+# itself stack-overflowed on self-referential constants (uncaught, escaping `hasbranching`) and
+# was O(length) on large ones. The exact result is version-dependent (whether inference folds
+# predicates on a mutable constant); the invariant is that the query completes.
+const SELFREF_CONST = Any[]
+push!(SELFREF_CONST, SELFREF_CONST)
+selref_pick(p, v) = isempty(v) ? p.a : p.b
+rhs_selfref(p) = selref_pick(p, SELFREF_CONST)[1]
+@test FunctionProperties.hasbranching(rhs_selfref, tbp) isa Bool
+
+# `hasbranching` consulted from inside a generated-function expansion: reflection is restricted
+# there, so the IR may be unobtainable -- the answer must then be the conservative "could be
+# branching", not a silent branch-free (which made generators emit the wrong arm).
+genhb_branchy(x) = x > 0 ? x : -x
+@generated function gen_consults_hb(p)
+    return FunctionProperties.hasbranching(genhb_branchy, 1.0) ? :(p.a) : :(p.b)
+end
+@test gen_consults_hb(tbp) == tbp.a
+
+# Constants are keyed by `objectid` in the refutation machinery: user `hash`/`==` overloads must
+# never run (a throwing overload previously escaped `hasbranching` as an uncaught exception).
+struct EvilHashBits
+    x::Int
+end
+Base.hash(::EvilHashBits, ::UInt) = error("user hash must not be called")
+Base.:(==)(::EvilHashBits, ::EvilHashBits) = error("user == must not be called")
+evil_pick(p, e) = e.x == 1 ? p.a : p.b
+rhs_evilhash(p) = evil_pick(p, EvilHashBits(1))[1]
+@test FunctionProperties.hasbranching(rhs_evilhash, tbp) isa Bool
+
+# Loads from const-bound MUTABLES must stay unfolded (Julia's effects system guarantees this;
+# lock it in): folding on current contents would turn into a false negative after mutation.
+const MUT_FLAG = Ref(true)
+mut_pick(p) = MUT_FLAG[] ? p.a : p.b
+@test FunctionProperties.hasbranching(mut_pick, tbp)
+
+# An entry with nothing scannable -- e.g. an opaque closure, which has no entry in the method
+# tables -- must answer the conservative "could be branching", not a silent branch-free.
+const OC_BRANCHY = Base.Experimental.@opaque p -> p.a[1] > 0 ? p.a : p.b
+@test FunctionProperties.hasbranching(OC_BRANCHY, tbp)
+
+# Base's callable wrappers delegate through Base-owned helpers, so the library boundary hid user
+# branches inside them (`relu ∘ layer` reported branch-free). Known wrappers are unwrapped into
+# component signatures under the normal policy: user components are scanned, Base components stay
+# library leaves.
+wrap_branchy(x) = x > 0 ? x : zero(x)
+wrap_cmp(x, t) = x > t ? x : t
+@test FunctionProperties.hasbranching(wrap_branchy ∘ identity, 1.0)
+@test FunctionProperties.hasbranching(identity ∘ wrap_branchy, 1.0)
+@test !FunctionProperties.hasbranching(abs2 ∘ identity, 1.0)
+@test !FunctionProperties.hasbranching(sin ∘ identity, 1.0)   # Base components stay leaves
+@test FunctionProperties.hasbranching(Base.Fix1(wrap_cmp, 0.0), 1.0)
+@test FunctionProperties.hasbranching(Base.Fix2(wrap_cmp, 0.0), 1.0)
+@test !FunctionProperties.hasbranching(Base.Fix2(*, 2.0), 1.0)
