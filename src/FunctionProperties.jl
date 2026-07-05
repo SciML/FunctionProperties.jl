@@ -106,10 +106,19 @@ function _hasbranching(@nospecialize(sig), seen, depth)
     sig in seen && return NOBRANCH
     push!(seen, sig)
 
+    # If the *entry* IR cannot be obtained -- e.g. reflection is restricted because we are running
+    # inside a generated-function expansion -- the safe answer is "could be branching", not
+    # "assume a leaf": a silent branch-free here returned false negatives to generators that
+    # consulted `hasbranching` while expanding. For a *nested* callee whose IR is unobtainable
+    # even though `which` resolved it, the leaf treatment is kept: that is the same tier as the
+    # other unresolvable-callee give-ups, and on older Julia versions some library-adjacent
+    # signatures legitimately fail reflection mid-recursion.
     results = try
         Base.code_typed_by_type(sig; optimize = false)
     catch
-        return NOBRANCH
+        depth == 0 || return NOBRANCH
+        delete!(seen, sig)
+        return LIMITED
     end
 
     for pair in results

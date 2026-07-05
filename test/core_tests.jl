@@ -230,3 +230,12 @@ push!(SELFREF_CONST, SELFREF_CONST)
 selref_pick(p, v) = isempty(v) ? p.a : p.b
 rhs_selfref(p) = selref_pick(p, SELFREF_CONST)[1]
 @test FunctionProperties.hasbranching(rhs_selfref, tbp) isa Bool
+
+# `hasbranching` consulted from inside a generated-function expansion: reflection is restricted
+# there, so the IR may be unobtainable -- the answer must then be the conservative "could be
+# branching", not a silent branch-free (which made generators emit the wrong arm).
+genhb_branchy(x) = x > 0 ? x : -x
+@generated function gen_consults_hb(p)
+    return FunctionProperties.hasbranching(genhb_branchy, 1.0) ? :(p.a) : :(p.b)
+end
+@test gen_consults_hb(tbp) == tbp.a
