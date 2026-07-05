@@ -197,5 +197,7 @@ false
 ```
 """
 function isautonomous(f, x...; wrt = length(x))
+    # With no arguments there is nothing the output could depend on: vacuously autonomous.
+    isempty(x) && return true
     return _degree_bound(f, x, wrt) == 0
 end

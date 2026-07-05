@@ -470,3 +470,80 @@ let rng = Random.Xoshiro(0x0707)
         end
     end
 end
+
+# ---------------------------------------------------------------------------------------------
+# Hardening round 2: further value channels, smuggling shapes, and edge cases.
+
+# `hash(t)` is currently blocked only incidentally (Base's `hash(::Real)` fallback reaches
+# `decompose`, which has no tracer method): lock the conservative answer so a Base fallback
+# change cannot silently reopen the channel. (`objectid` remains open and is documented as a
+# known boundary in the design page -- it is not overloadable.)
+@test !isautonomous((u, p, t) -> u .+ (hash(t) % UInt(7)), [1.0], nothing, 0.5)
+@test !isautonomous((u, p, t) -> u .+ get(Dict(t => 1.0), t, 0.0), [1.0], nothing, 0.5)
+
+# Randomness smuggled through kwarg defaults, varargs, and higher-order arguments.
+kwrand_h(u; g = rand) = u .+ g()
+vrand_h(fs...) = fs[1]()
+grideval_h(u, op) = op(u[1])
+@test hasrandomness(u -> kwrand_h(u), [1.0])
+@test hasrandomness(u -> u .+ vrand_h(rand), [1.0])
+@test hasrandomness(u -> grideval_h(u, x -> x + randn()), [1.0])
+@test !hasrandomness(u -> grideval_h(u, x -> x + 1.0), [1.0])
+
+# A task spawned inside `f` that mutates after returning is (conservatively) flagged.
+@test hasmutation(u -> (Threads.@spawn (sleep(0.01); u[1] = 0.0); nothing), [1.0, 2.0]; arg = 1)
+
+# Edge cases: zero-argument functions are vacuously autonomous; unusual argument containers
+# must produce Bools, never throw.
+@test isautonomous(() -> 1.0)
+@test islinear(u -> 2 .* u, Float64[])
+@test islinear(u -> (u' * u'), [1.0 2.0]) isa Bool
+@test islinear(r -> r .+ 1, 1:3) isa Bool
+if FunctionProperties._effects_capable()
+    const GREAD_H = Ref(1.0)
+    @test !ispure(x -> x + GREAD_H[], 1.0)
+end
+@test isinferable(x -> error("x"), 1.0) isa Bool
+
+# Cross-property fuzz: one random program, every certificate checked against a runtime witness.
+let rng = Random.Xoshiro(0xC0DE)
+    for k in 1:30
+        use_t = rand(rng, Bool)
+        use_kink = rand(rng, Bool)
+        use_rand = rand(rng, Bool)
+        write_u = rand(rng, Bool)
+        nonlin = rand(rng, Bool)
+        terms = String[nonlin ? "uu[1]^2" : "2.0 * uu[1]"]
+        use_t && push!(terms, "t")
+        use_kink && push!(terms, "abs(uu[1] - 0.3)")
+        use_rand && push!(terms, "rand()")
+        fname = Symbol(:fzx_, k)
+        wstmt = write_u ? "uu[2] = 0.0;" : ""
+        code = "function $fname(du, uu, p, t); $wstmt du[1] = " * join(terms, " + ") *
+            "; du[2] = uu[2]; return nothing; end"
+        f = eval(Meta.parse(code))
+        Base.invokelatest() do
+            u0 = [1.0, 2.0]
+            m = hasmutation(f, zeros(2), copy(u0), nothing, 0.25; arg = 2)
+            write_u && @test m
+            if !m
+                uu = copy(u0)
+                f(zeros(2), uu, nothing, 0.25)
+                @test uu == u0
+            end
+            r = hasrandomness(f, zeros(2), copy(u0), nothing, 0.25)
+            use_rand && @test r
+            at = isautonomous((u, t) -> (d = zeros(2); f(d, u, nothing, t); d), copy(u0), 0.25)
+            use_t && @test !at
+            if at && !use_rand && !write_u
+                x = (d = zeros(2); f(d, copy(u0), nothing, 0.25); d)
+                y = (d = zeros(2); f(d, copy(u0), nothing, 1.75); d)
+                @test x == y
+            end
+            sm = issmooth((u, t) -> (d = zeros(2); f(d, u, nothing, t); d), copy(u0), 0.25)
+            use_kink && @test !sm
+            li = islinear(u -> (d = zeros(2); f(d, u, nothing, 0.25); d), copy(u0))
+            nonlin && @test !li
+        end
+    end
+end

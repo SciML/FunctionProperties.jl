@@ -54,4 +54,7 @@ The certificates share the documented visibility limits of the static scan: call
 behind dynamic dispatch (untyped `Function` fields) are invisible to it, `Base` internals are
 leaves for branch detection (tracers compensate where they run), and floating-point rounding
 is not modeled — polynomial and smoothness certificates are statements about the program's
-real-arithmetic semantics.
+real-arithmetic semantics. One value channel cannot be closed by the tracers: `objectid` is not
+overloadable, so a program that feeds `objectid` of a traced value into its output can obtain a
+certificate that does not survive at runtime — as in every tracer-based system. Reflection of
+that kind is outside the certified program class.
