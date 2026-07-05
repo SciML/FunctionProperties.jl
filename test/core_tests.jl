@@ -334,3 +334,216 @@ let rng = Random.Xoshiro(0x1517)
         lin_truth || @test !cert
     end
 end
+
+# ---------------------------------------------------------------------------------------------
+# `isautonomous`: certified independence from the trailing (time) argument.
+@test isautonomous((u, p, t) -> p[1] * u[1], [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> u[1] * sin(t), [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> u[1] + t, [1.0], [2.0], 0.0)
+# `t * 0` is genuinely independent but not certified (no cancellation modeling): conservative.
+@test !isautonomous((u, p, t) -> u[1] + t * 0.0, [1.0], [2.0], 0.0)
+@test !isautonomous((u, p, t) -> t > 0 ? u[1] : -u[1], [1.0], [2.0], 1.0)
+
+# `issmooth`: certified composition of real-analytic primitives on the domain interior.
+@test issmooth((u, p, t) -> exp(u[1]) * sin(t), [1.0], nothing, 0.0)
+@test issmooth(x -> sqrt(x + 1.0) * tanh(x), 1.0)
+@test issmooth(u -> sum(abs2, u), [1.0, 2.0])
+@test !issmooth(u -> abs(u[1]), [1.0])
+@test !issmooth(u -> max.(u, 0.0), [1.0])                 # kink through broadcast machinery
+@test !issmooth(x -> mod(x, 2.0), 1.0)
+@test !issmooth(x -> x > 0 ? x : zero(x), 1.0)            # branch blocks the certificate
+
+# `hasrandomness`: any statically reachable Random-stdlib call, however nested.
+rng_leaf(v) = v .+ randn(length(v))
+rng_wrap(v) = rng_leaf(v) .* 2
+@test hasrandomness(u -> u .+ rand(), [1.0])
+@test hasrandomness(rng_wrap, [1.0])
+@test hasrandomness(u -> Random.shuffle(u), [1.0, 2.0])
+@test !hasrandomness(u -> 2 .* u .+ 1, [1.0])
+@test !hasrandomness((u, p, t) -> p[1] * u[1], [1.0], [2.0], 0.0)
+
+# `hasmutation`: per-argument write certification for in-place right-hand sides.
+mut_rhs!(du, u, p, t) = (du .= p[1] .* u; nothing)
+sneaky_rhs!(du, u, p, t) = (u[1] = 0.0; du .= u; nothing)
+@test hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 1)
+@test !hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+@test !hasmutation(mut_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 3)
+@test hasmutation(sneaky_rhs!, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+@test !hasmutation((u, p) -> u .+ p, [1.0], [2.0])                 # out-of-place: nothing written
+# Aliasing through another argument withholds the certificate.
+alias_u = [1.0]
+@test hasmutation((a, b) -> (b[1] = 5.0; nothing), alias_u, alias_u; arg = 1)
+# Non-isbits element arrays cannot be certified (interior mutation is invisible to the probe).
+@test hasmutation(u -> (u[1][1] = 0.0; nothing), [[1.0]]; arg = 1)
+# Witness oracle: a certified-unmutated argument must be exactly unchanged by a real call.
+let du = zeros(2), u = [1.0, 2.0], u0 = copy(u)
+    @test !hasmutation(mut_rhs!, du, u, [3.0], 0.0; arg = 2)
+    mut_rhs!(du, u, [3.0], 0.0)
+    @test u == u0
+end
+
+# `ispure` / `isinferable`: thin certificates over compiler analyses.
+if FunctionProperties._effects_capable()
+    @test ispure(x -> 2x + 1, 1.0)
+    @test !ispure(x -> x + rand(), 1.0)
+    const IMPURE_ACC = Ref(0.0)
+    @test !ispure(x -> (IMPURE_ACC[] += x; x), 1.0)
+end
+@test isinferable(x -> 2x, 1.0)
+@test isinferable((u, p, t) -> p[1] .* u, [1.0], [2.0], 0.0)
+@test !isinferable(x -> x > 0 ? 1 : 2.0, 1.0)
+
+# ---------------------------------------------------------------------------------------------
+# Property-suite hardening: each case below reproduces a demonstrated defect (false certificate
+# or missed detection) or an adversarial probe from the hardening battery.
+
+# Text rendering is a value channel: `string(t)` completed with a fixed type-printed string,
+# laundering the traced value into untraced data and earning false certificates.
+@test !isautonomous((u, p, t) -> u .+ Float64(codeunit(string(t), 1)), [1.0], nothing, 0.5)
+@test !issmooth(x -> x + Float64(codeunit(string(x), 1)), 0.5)
+@test !isautonomous((u, p, t) -> u .* length("$t"), [1.0], nothing, 0.5)
+
+# Function values in argument position never appear as visible calls: `rand` is Base-owned
+# (Random only extends it), so it is matched by name; user singletons are walked by method;
+# closures with captures are conservatively random.
+@test hasrandomness(v -> v .+ rand.(), [1.0])
+@test hasrandomness(v -> map(x -> x + rand(), v), [1.0])
+@test hasrandomness(v -> v .+ rand(Random.Xoshiro(1)), [1.0])
+@test !hasrandomness(v -> map(x -> x + 1.0, v), [1.0])
+@test !hasrandomness(v -> sum(abs2, v), [1.0])
+
+# Aliasing beyond `===`: NamedTuple/struct fields and memory-sharing views must all withhold
+# the non-mutation certificate, while a legitimate `nothing` argument must not.
+let u = [1.0, 2.0]
+    @test hasmutation((a, p) -> (p.cache[1] = 9.0; nothing), u, (cache = u,); arg = 1)
+    @test hasmutation((a, v) -> (v[1] = 7.0; nothing), u, view(u, :); arg = 1)
+    @test !hasmutation((du, uu, p, t) -> (du .= uu; nothing), zeros(2), u, nothing, 0.0; arg = 2)
+end
+@test hasmutation((a) -> (fill!(a, 0.0); nothing), [1.0, 2.0]; arg = 1)
+@test hasmutation((a, b) -> (copyto!(a, b); nothing), [1.0, 2.0], [3.0, 4.0]; arg = 1)
+@test hasmutation((a) -> (empty!(a); nothing), [1.0, 2.0]; arg = 1)         # unsupported: conservative
+@test hasmutation((a) -> (view(a, 1:1)[1] = 0.0; nothing), [1.0, 2.0]; arg = 1)
+@test hasmutation((a) -> (a[1] += 1.0; a[1] -= 1.0; nothing), [1.0, 2.0]; arg = 1)
+@test !hasmutation((x, y) -> x + y, 1.0, 2.0; arg = 1)                       # immutables trivially clean
+@test isautonomous((u, p, t) -> u .+ zero(t), [1.0], nothing, 0.5)           # zero(t) is t-independent
+@test !isautonomous((u, p, t) -> u .+ Ref(t)[], [1.0], nothing, 0.5)
+@test issmooth(x -> (x + 2.0)^2.5, 1.0)
+@test !issmooth(x -> sign(x) * x^2, 1.0)
+
+# Fuzz with runtime witness oracles: certified autonomy must mean exact agreement across
+# different `t`, and a certified-unmutated argument must be exactly unchanged by a real call.
+let rng = Random.Xoshiro(0x0707)
+    for k in 1:25
+        uses_t = rand(rng, Bool)
+        op = rand(rng, 1:3)
+        fname = Symbol(:fzham_a, k)
+        body = uses_t ?
+            (op == 1 ? :(u .+ t) : op == 2 ? :(u .* sin(t)) : :(u .+ t^2)) :
+            (op == 1 ? :(u .+ p[1]) : op == 2 ? :(u .* cos(p[1])) : :(u .+ p[1]^2))
+        @eval $fname(u, p, t) = $body
+        f = @eval $fname
+        cert = isautonomous(f, [1.0], [2.0], 0.3)
+        uses_t && @test !cert
+        cert && @test f([1.0], [2.0], 0.3) == f([1.0], [2.0], 1.7)
+    end
+    for k in 1:25
+        writes_u = rand(rng, Bool)
+        fname = Symbol(:fzham_m, k)
+        body = writes_u ? :(
+                begin
+                    du .= p[1] .* uu; uu[1] = 0.0; nothing
+                end
+            ) :
+            :(
+                begin
+                    du .= p[1] .* uu; nothing
+                end
+            )
+        @eval $fname(du, uu, p, t) = $body
+        f = @eval $fname
+        cert_mut = hasmutation(f, zeros(2), [1.0, 2.0], [3.0], 0.0; arg = 2)
+        writes_u && @test cert_mut
+        if !cert_mut
+            uu = [1.0, 2.0]; uu0 = copy(uu)
+            f(zeros(2), uu, [3.0], 0.0)
+            @test uu == uu0
+        end
+    end
+end
+
+# ---------------------------------------------------------------------------------------------
+# Hardening round 2: further value channels, smuggling shapes, and edge cases.
+
+# `hash(t)` is currently blocked only incidentally (Base's `hash(::Real)` fallback reaches
+# `decompose`, which has no tracer method): lock the conservative answer so a Base fallback
+# change cannot silently reopen the channel. (`objectid` remains open and is documented as a
+# known boundary in the design page -- it is not overloadable.)
+@test !isautonomous((u, p, t) -> u .+ (hash(t) % UInt(7)), [1.0], nothing, 0.5)
+@test !isautonomous((u, p, t) -> u .+ get(Dict(t => 1.0), t, 0.0), [1.0], nothing, 0.5)
+
+# Randomness smuggled through kwarg defaults, varargs, and higher-order arguments.
+kwrand_h(u; g = rand) = u .+ g()
+vrand_h(fs...) = fs[1]()
+grideval_h(u, op) = op(u[1])
+@test hasrandomness(u -> kwrand_h(u), [1.0])
+@test hasrandomness(u -> u .+ vrand_h(rand), [1.0])
+@test hasrandomness(u -> grideval_h(u, x -> x + randn()), [1.0])
+@test !hasrandomness(u -> grideval_h(u, x -> x + 1.0), [1.0])
+
+# A task spawned inside `f` that mutates after returning is (conservatively) flagged.
+@test hasmutation(u -> (Threads.@spawn (sleep(0.01); u[1] = 0.0); nothing), [1.0, 2.0]; arg = 1)
+
+# Edge cases: zero-argument functions are vacuously autonomous; unusual argument containers
+# must produce Bools, never throw.
+@test isautonomous(() -> 1.0)
+@test islinear(u -> 2 .* u, Float64[])
+@test islinear(u -> (u' * u'), [1.0 2.0]) isa Bool
+@test islinear(r -> r .+ 1, 1:3) isa Bool
+if FunctionProperties._effects_capable()
+    const GREAD_H = Ref(1.0)
+    @test !ispure(x -> x + GREAD_H[], 1.0)
+end
+@test isinferable(x -> error("x"), 1.0) isa Bool
+
+# Cross-property fuzz: one random program, every certificate checked against a runtime witness.
+let rng = Random.Xoshiro(0xC0DE)
+    for k in 1:30
+        use_t = rand(rng, Bool)
+        use_kink = rand(rng, Bool)
+        use_rand = rand(rng, Bool)
+        write_u = rand(rng, Bool)
+        nonlin = rand(rng, Bool)
+        terms = String[nonlin ? "uu[1]^2" : "2.0 * uu[1]"]
+        use_t && push!(terms, "t")
+        use_kink && push!(terms, "abs(uu[1] - 0.3)")
+        use_rand && push!(terms, "rand()")
+        fname = Symbol(:fzx_, k)
+        wstmt = write_u ? "uu[2] = 0.0;" : ""
+        code = "function $fname(du, uu, p, t); $wstmt du[1] = " * join(terms, " + ") *
+            "; du[2] = uu[2]; return nothing; end"
+        f = eval(Meta.parse(code))
+        Base.invokelatest() do
+            u0 = [1.0, 2.0]
+            m = hasmutation(f, zeros(2), copy(u0), nothing, 0.25; arg = 2)
+            write_u && @test m
+            if !m
+                uu = copy(u0)
+                f(zeros(2), uu, nothing, 0.25)
+                @test uu == u0
+            end
+            r = hasrandomness(f, zeros(2), copy(u0), nothing, 0.25)
+            use_rand && @test r
+            at = isautonomous((u, t) -> (d = zeros(2); f(d, u, nothing, t); d), copy(u0), 0.25)
+            use_t && @test !at
+            if at && !use_rand && !write_u
+                x = (d = zeros(2); f(d, copy(u0), nothing, 0.25); d)
+                y = (d = zeros(2); f(d, copy(u0), nothing, 1.75); d)
+                @test x == y
+            end
+            sm = issmooth((u, t) -> (d = zeros(2); f(d, u, nothing, t); d), copy(u0), 0.25)
+            use_kink && @test !sm
+            li = islinear(u -> (d = zeros(2); f(d, u, nothing, 0.25); d), copy(u0))
+            nonlin && @test !li
+        end
+    end
+end

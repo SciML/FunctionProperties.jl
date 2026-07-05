@@ -90,13 +90,17 @@ end
 for fn in (:isnan, :isinf, :isfinite, :iszero, :isone, :signbit, :isinteger)
     @eval Base.$fn(a::PolyDegree) = throw(DegreeTracerError($(QuoteNode(fn))))
 end
+# Text rendering is a value channel: `string(t)` would otherwise complete with a fixed
+# type-printed string, laundering the traced value into untraced data (demonstrated:
+# `u .+ Float64(codeunit(string(t), 1))` earned a false autonomy certificate).
+Base.show(io::IO, ::PolyDegree) = throw(DegreeTracerError(:show))
 for fn in (:floor, :ceil, :trunc, :round)
     @eval Base.$fn(a::PolyDegree) = throw(DegreeTracerError($(QuoteNode(fn))))
 end
 
 _seed(x::Real) = PolyDegree(1)
 _seed(x::AbstractArray{<:Real}) = map(_ -> PolyDegree(1), x)
-_seed(x) = throw(DegreeTracerError(:seed))
+_seed(x) = x   # non-numeric arguments pass through and stay fixed
 
 _max_degree(y::PolyDegree) = y.d
 _max_degree(y::Real) = 0
@@ -171,4 +175,29 @@ false
 """
 function isquadratic(f, x...; wrt = 1)
     return _degree_bound(f, x, wrt) <= 2
+end
+
+"""
+    isautonomous(f, x...; wrt = length(x)) -> Bool
+
+Attempt to *prove* that `f` does not depend on the argument selected by `wrt` (by SciML
+convention the trailing time argument, the default). Holding the other arguments fixed at the
+values given, `true` certifies that the selected argument cannot influence the output: it is
+seeded with a degree tracer, and the output is certified constant (degree `0`) in it, with
+[`hasbranching`](@ref) proving the traced path is the only path. `false` means *not proven*.
+
+```jldoctest
+julia> using FunctionProperties
+
+julia> isautonomous((u, p, t) -> p[1] * u[1], [1.0], [2.0], 0.0)
+true
+
+julia> isautonomous((u, p, t) -> u[1] * sin(t), [1.0], [2.0], 0.0)
+false
+```
+"""
+function isautonomous(f, x...; wrt = length(x))
+    # With no arguments there is nothing the output could depend on: vacuously autonomous.
+    isempty(x) && return true
+    return _degree_bound(f, x, wrt) == 0
 end
