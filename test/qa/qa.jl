@@ -1,21 +1,28 @@
 using SciMLTesting, FunctionProperties, JET, Test
 
-# `hasbranching` is a compiler-introspection utility by nature: it scans type-inferred IR for
-# `Core.GotoIfNot` nodes and, to fold branches that constant arguments decide, re-runs inference
-# with `Core.Const` argument lattices preserved. None of the names this requires have public
-# equivalents, so they are allow-listed here rather than papered over:
-#
-#   - IR/lattice node types (`CodeInfo`, `SSAValue`, `Argument`, `SlotNumber`, `GotoNode`,
-#     `NewvarNode`, `ReturnNode`, `Const`, `PartialStruct`, `MethodInstance`, `svec`): the IR
-#     being scanned is made of these; there is no public IR representation.
-#   - Reflection entry points (`Core.Typeof`, `code_typed_by_type`, `specialize_method`,
-#     `get_world_counter`): `typeof` differs from `Core.Typeof` on type-valued arguments, and the
-#     signature-based reflection has no public counterpart.
-#   - The abstract interpreter (`Compiler`, `NativeInterpreter`, `InferenceResult`,
-#     `InferenceState`, `typeinf`, `retrieve_code_info`): there is no public API for "infer this
+# `hasbranching` is a compiler-introspection utility: it `code_typed`s `f` and scans the
+# resulting typed IR for value-dependent branches, and -- to fold branches that constant
+# arguments decide -- re-runs inference with `Core.Const` argument lattices preserved. It
+# therefore necessarily reaches into the `Core`/`Base` IR and inference internals, none of
+# which have a public equivalent:
+#   - `GotoIfNot` (explicit import via `using Core: GotoIfNot`) is the conditional-branch IR node.
+#   - `CodeInfo`/`SSAValue`/`SlotNumber`/`Argument`/`GotoNode`/`NewvarNode`/`ReturnNode` are
+#     typed-IR node types scanned in the body.
+#   - `Const`/`PartialStruct` are inference lattice element types read off the IR.
+#   - `MethodInstance` is the resolved-call type used to recurse through static calls, and
+#     `svec` builds the empty sparam vector for `specialize_method`.
+#   - `Typeof` builds the dispatch signature (`typeof` differs from `Core.Typeof` on
+#     type-valued arguments, and `Base.typesof` is itself non-public).
+#   - `code_typed_by_type` is the non-public typed-IR entry point (`Base.code_typed_by_type`),
+#     and `specialize_method`/`get_world_counter` are the reflection pieces needed to build a
+#     method instance for constant re-inference.
+#   - `Compiler`/`NativeInterpreter`/`InferenceResult`/`InferenceState`/`typeinf`/
+#     `retrieve_code_info` are the abstract interpreter: there is no public API for "infer this
 #     method with constant argument types". This dependency is deliberately confined behind a
 #     functional capability probe (`_const_prop_capable`) so the package degrades to the plain
 #     type scan wherever these internals change shape.
+# All of these are Core/Base compiler-introspection internals with no public API, so they are
+# ignored in the public-API checks.
 run_qa(
     FunctionProperties;
     explicit_imports = true,
