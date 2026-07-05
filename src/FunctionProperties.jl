@@ -164,8 +164,8 @@ function _unwrap_wrapper(@nospecialize(sig), seen, depth)
     if ft <: ComposedFunction && length(ft.parameters) == 2
         O, I = ft.parameters
         inner = Tuple{I, argts...}
-        rin = _recurse_sig(inner, nothing, Any[argts...], seen, depth)
-        rin == NOBRANCH || return rin
+        inner_res = _recurse_sig(inner, nothing, Any[argts...], seen, depth)
+        inner_res == NOBRANCH || return inner_res
         rt = _return_type_of(inner)
         return _recurse_sig(Tuple{O, rt}, nothing, Any[rt], seen, depth)
     end
