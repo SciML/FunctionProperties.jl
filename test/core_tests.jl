@@ -261,3 +261,17 @@ mut_pick(p) = MUT_FLAG[] ? p.a : p.b
 # tables -- must answer the conservative "could be branching", not a silent branch-free.
 const OC_BRANCHY = Base.Experimental.@opaque p -> p.a[1] > 0 ? p.a : p.b
 @test FunctionProperties.hasbranching(OC_BRANCHY, tbp)
+
+# Base's callable wrappers delegate through Base-owned helpers, so the library boundary hid user
+# branches inside them (`relu ∘ layer` reported branch-free). Known wrappers are unwrapped into
+# component signatures under the normal policy: user components are scanned, Base components stay
+# library leaves.
+wrap_branchy(x) = x > 0 ? x : zero(x)
+wrap_cmp(x, t) = x > t ? x : t
+@test FunctionProperties.hasbranching(wrap_branchy ∘ identity, 1.0)
+@test FunctionProperties.hasbranching(identity ∘ wrap_branchy, 1.0)
+@test !FunctionProperties.hasbranching(abs2 ∘ identity, 1.0)
+@test !FunctionProperties.hasbranching(sin ∘ identity, 1.0)   # Base components stay leaves
+@test FunctionProperties.hasbranching(Base.Fix1(wrap_cmp, 0.0), 1.0)
+@test FunctionProperties.hasbranching(Base.Fix2(wrap_cmp, 0.0), 1.0)
+@test !FunctionProperties.hasbranching(Base.Fix2(*, 2.0), 1.0)

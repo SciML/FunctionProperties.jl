@@ -103,6 +103,8 @@ const LIMITED = 0x02
 # depends on the remaining depth budget.
 function _hasbranching(@nospecialize(sig), seen, depth)
     depth > RECURSION_LIMIT && return LIMITED
+    r = _unwrap_wrapper(sig, seen, depth)
+    r === nothing || return r
     sig in seen && return NOBRANCH
     push!(seen, sig)
 
@@ -143,6 +145,56 @@ function _hasbranching(@nospecialize(sig), seen, depth)
         return LIMITED
     end
     return NOBRANCH
+end
+
+# Base's callable wrapper structs (`ComposedFunction`, `Base.Fix`/`Fix1`/`Fix2`) delegate to the
+# functions they capture through Base-owned helper methods (kwargs bodies, tuple plumbing), so the
+# library-leaf boundary would swallow a user branch hidden inside the wrapper -- e.g. an ODE
+# right-hand side written as `relu ∘ layer` silently reported branch-free. Known wrappers are
+# unwrapped structurally into component signatures, each routed through the normal call policy:
+# a Base component (`sin ∘ f`) stays a library leaf, a user component is scanned. Returns
+# `nothing` when `sig` is not a recognized wrapper call.
+function _unwrap_wrapper(@nospecialize(sig), seen, depth)
+    sig isa DataType || return nothing
+    params = collect(sig.parameters)
+    isempty(params) && return nothing
+    ft = params[1]
+    ft isa DataType || return nothing
+    argts = params[2:end]
+    if ft <: ComposedFunction && length(ft.parameters) == 2
+        O, I = ft.parameters
+        inner = Tuple{I, argts...}
+        rin = _recurse_sig(inner, nothing, Any[argts...], seen, depth)
+        rin == NOBRANCH || return rin
+        rt = _return_type_of(inner)
+        return _recurse_sig(Tuple{O, rt}, nothing, Any[rt], seen, depth)
+    end
+    if isdefined(Base, :Fix) && ft <: Base.Fix && length(ft.parameters) == 3
+        N, F, T = ft.parameters
+        N isa Int || return nothing
+        N - 1 <= length(argts) || return nothing
+        inner = Any[argts...]
+        insert!(inner, N, T)
+        return _recurse_sig(Tuple{F, inner...}, nothing, inner, seen, depth)
+    end
+    if !isdefined(Base, :Fix) && ft <: Base.Fix1 && length(ft.parameters) == 2
+        F, T = ft.parameters
+        return _recurse_sig(Tuple{F, T, argts...}, nothing, Any[T, argts...], seen, depth)
+    end
+    if !isdefined(Base, :Fix) && ft <: Base.Fix2 && length(ft.parameters) == 2
+        F, T = ft.parameters
+        return _recurse_sig(Tuple{F, argts..., T}, nothing, Any[argts..., T], seen, depth)
+    end
+    return nothing
+end
+
+function _return_type_of(@nospecialize(sig))
+    return try
+        rs = Base.code_typed_by_type(sig; optimize = false)
+        isempty(rs) ? Any : _widen(reduce(typejoin, Any[last(pair) for pair in rs]))
+    catch
+        Any
+    end
 end
 
 function _scan_codeinfo(ci, seen, depth)
@@ -249,6 +301,9 @@ function _recurse_sig(@nospecialize(callsig), @nospecialize(fval), arglat, seen,
     catch
         return NOBRANCH
     end
+    # Known Base callable wrappers are unwrapped before the library check would swallow them.
+    r = _unwrap_wrapper(callsig, seen, depth)
+    r === nothing || return r
     _is_library_method(m) && return NOBRANCH
     # Out of depth budget: "could be branching", never "assume a leaf". Refutation manufactures
     # depth (one level per constant-recursion step), and a branch-free backstop here let a
