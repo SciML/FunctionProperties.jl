@@ -239,3 +239,25 @@ genhb_branchy(x) = x > 0 ? x : -x
     return FunctionProperties.hasbranching(genhb_branchy, 1.0) ? :(p.a) : :(p.b)
 end
 @test gen_consults_hb(tbp) == tbp.a
+
+# Constants are keyed by `objectid` in the refutation machinery: user `hash`/`==` overloads must
+# never run (a throwing overload previously escaped `hasbranching` as an uncaught exception).
+struct EvilHashBits
+    x::Int
+end
+Base.hash(::EvilHashBits, ::UInt) = error("user hash must not be called")
+Base.:(==)(::EvilHashBits, ::EvilHashBits) = error("user == must not be called")
+evil_pick(p, e) = e.x == 1 ? p.a : p.b
+rhs_evilhash(p) = evil_pick(p, EvilHashBits(1))[1]
+@test FunctionProperties.hasbranching(rhs_evilhash, tbp) isa Bool
+
+# Loads from const-bound MUTABLES must stay unfolded (Julia's effects system guarantees this;
+# lock it in): folding on current contents would turn into a false negative after mutation.
+const MUT_FLAG = Ref(true)
+mut_pick(p) = MUT_FLAG[] ? p.a : p.b
+@test FunctionProperties.hasbranching(mut_pick, tbp)
+
+# An entry with nothing scannable -- e.g. an opaque closure, which has no entry in the method
+# tables -- must answer the conservative "could be branching", not a silent branch-free.
+const OC_BRANCHY = Base.Experimental.@opaque p -> p.a[1] > 0 ? p.a : p.b
+@test FunctionProperties.hasbranching(OC_BRANCHY, tbp)

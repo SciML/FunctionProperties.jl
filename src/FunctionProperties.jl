@@ -121,16 +121,26 @@ function _hasbranching(@nospecialize(sig), seen, depth)
         return LIMITED
     end
 
+    scanned_any = false
     for pair in results
         ci = first(pair)
         # Generated functions that were not expanded come back as `Method`, not `CodeInfo`;
         # there is no body to scan, so treat them as leaves.
         ci isa Core.CodeInfo || continue
+        scanned_any = true
         r = _scan_codeinfo(ci, seen, depth)
         if r != NOBRANCH
             delete!(seen, sig)
             return r
         end
+    end
+    # Nothing scannable at the *entry* -- no matching methods in the tables (an opaque closure) or
+    # only unexpandable generated bodies: same policy as an unobtainable entry IR, "could be
+    # branching". Mid-recursion the leaf treatment stands (`which` resolved the callee; empty or
+    # `Method`-only results there keep the long-standing give-up tier).
+    if depth == 0 && !scanned_any
+        delete!(seen, sig)
+        return LIMITED
     end
     return NOBRANCH
 end
@@ -306,14 +316,13 @@ function _const_refutes(@nospecialize(sig), argtypes, seen, depth)
     end
 end
 
-# The refute marker must be cheap and total to hash: non-isbits constant values are keyed by
-# object identity, which is exact for the marker's purpose (the same constant reaching the same
-# sig along one DFS path is the same object) and never recurses into user data -- hashing the
-# value itself was O(length) for large constants and a stack overflow for self-referential ones.
+# The refute marker must be cheap and total to hash, and must never run user code: constants are
+# keyed by `objectid`, which is egal-based (equal isbits values and identical mutables map to the
+# same id) -- exact for the marker's purpose. Keying by value hashed with `Base.hash`/`isequal`
+# was a stack overflow for self-referential constants, O(length) for large ones, and an uncaught
+# user exception for types with throwing `hash`/`==` overloads.
 _const_key(argtypes) = map(argtypes) do x
-    x isa Core.Const || return (false, x)
-    v = x.val
-    return (true, isbitstype(typeof(v)) || v isa Symbol ? v : objectid(v))
+    x isa Core.Const ? (true, objectid(x.val)) : (false, x)
 end
 
 _first_param(@nospecialize(sig)) =
