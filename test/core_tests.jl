@@ -175,6 +175,14 @@ tbp = TwoBufferParams([1.0], [2.0])
 
 @test FunctionProperties.hasbranching(rhs_real_branch, 1.0, tbp)   # genuine branch: always reported
 @test FunctionProperties.hasbranching(rhs_dynamic_index, tbp, 1)   # dynamic index: always reported
+
+# The functional gate exists so a future compiler shift degrades to the plain type recursion
+# instead of erroring — but on every *supported* Julia version the probe must succeed, or the
+# refutation blocks below silently skip and `rhs_const_index` is reported as a false positive.
+# (On ≤1.11 this needs the compiler-owned `specialize_method` and `BitVector`: `Base` has no
+# `specialize_method` there, and `Core.Compiler.BitVector` is a distinct bootstrapped type.)
+VERSION >= v"1.10" && (@test FunctionProperties._const_prop_capable())
+
 if FunctionProperties._const_prop_capable()
     @test !FunctionProperties.hasbranching(rhs_const_index, tbp)   # constant index folds away
 end

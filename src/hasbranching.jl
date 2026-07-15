@@ -431,11 +431,15 @@ function _const_infer_src(@nospecialize(sig), argtypes)
         return nothing
     end
     mi = try
-        Base.specialize_method(m, sig, Core.svec())
+        # `specialize_method` lives in the compiler module; `Base.specialize_method` does not
+        # exist on 1.10, where its absence silently disabled the whole constant recursion.
+        _CC.specialize_method(m, sig, Core.svec())
     catch
         return nothing
     end
-    overridden = BitVector(x isa Core.Const for x in argtypes)
+    # `_CC.BitVector`: on ≤1.11 `Core.Compiler` bootstraps its own `BitVector`, distinct from
+    # `Base.BitVector`, and `InferenceResult` accepts only the compiler-owned one.
+    overridden = _CC.BitVector(Bool[x isa Core.Const for x in argtypes])
     src0 = try
         _CC.retrieve_code_info(mi, Base.get_world_counter())
     catch
