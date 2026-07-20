@@ -33,7 +33,6 @@ using SciMLTesting, FunctionProperties, JET, Test
 # ignored in the public-API checks.
 run_qa(
     FunctionProperties;
-    api_docs_kwargs = (; rendered = true),
     explicit_imports = true,
     ei_kwargs = (;
         all_explicit_imports_are_public = (; ignore = (:GotoIfNot,)),
