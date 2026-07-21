@@ -69,7 +69,7 @@ uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 version = "1.11.0"
 
 [[deps.FunctionProperties]]
-path = "/home/runner/work/FunctionProperties.jl/FunctionProperties.jl"
+path = "/home/runner/_work/FunctionProperties.jl/FunctionProperties.jl"
 uuid = "f62d2435-5019-4c03-9749-2d4c77af0cbc"
 version = "1.1.0"
 
