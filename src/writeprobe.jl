@@ -46,6 +46,18 @@ The certificate covers writes through the selected argument reference and reject
 recorded write. Aliases of the selected array reachable through the *other* arguments are
 detected one structural level deep (arguments themselves and elements of tuples or arrays of
 arrays); deeper aliasing is outside the certificate.
+
+## Example
+
+```jldoctest
+julia> using FunctionProperties
+
+julia> hasmutation(x -> sum(abs2, x), [1.0, 2.0])
+false
+
+julia> hasmutation(x -> (x[1] = 0; x), [1.0, 2.0])
+true
+```
 """
 function hasmutation(f, x...; arg = (:))
     idx = _wrt_indices(arg, length(x))

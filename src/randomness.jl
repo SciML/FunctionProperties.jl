@@ -15,6 +15,15 @@ call is reachable through statically resolvable calls.
 
 This matters wherever a trace of `f` is replayed, e.g. compiled ReverseDiff tapes freeze the
 random draws of the recording pass, silently changing the semantics of a stochastic `f`.
+
+## Example
+
+```jldoctest
+julia> using FunctionProperties
+
+julia> hasrandomness(x -> x + 1, 2.0)
+false
+```
 """
 function hasrandomness(f, x...)
     sig = Tuple{Core.Typeof(f), Core.Typeof.(x)...}

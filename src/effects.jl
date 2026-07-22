@@ -37,6 +37,15 @@ effects analysis must establish both consistency (equal inputs give equal output
 dependence on or mutation of external state) and effect freeness (no observable side effects).
 `false` means *not proven*. The underlying effect queries are compiler internals, so they are
 verified functionally at first use; where they are unavailable the answer is always `false`.
+
+## Example
+
+```jldoctest
+julia> using FunctionProperties
+
+julia> ispure(x -> x^2 + 1, 2.0)
+true
+```
 """
 function ispure(f, x...)
     _effects_capable() || return false
@@ -53,6 +62,15 @@ end
 Check whether the return type of `f` for arguments of the given types is inferred as a single
 concrete type. `false` means inference produced an abstract or `Union` result -- or that the
 call could not be analyzed at all.
+
+## Example
+
+```jldoctest
+julia> using FunctionProperties
+
+julia> isinferable(x -> x + 1, 2.0)
+true
+```
 """
 function isinferable(f, x...)
     sig = Tuple{Core.Typeof(f), Core.Typeof.(x)...}
