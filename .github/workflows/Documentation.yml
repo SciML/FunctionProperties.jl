@@ -16,3 +16,10 @@ jobs:
     name: "Documentation"
     uses: "SciML/.github/.github/workflows/documentation.yml@v1"
     secrets: "inherit"
+    with:
+      # Code-coverage instrumentation inserts side-effecting per-line counter writes into every
+      # compiled method, so `Base.infer_effects` reports every function as not effect-free. That
+      # makes `ispure` (and the `_effects_capable` probe it depends on) return `false` under
+      # coverage, which breaks the `ispure` doctest in src/effects.jl. Coverage collected from a
+      # doctest build is meaningless anyway, so disable it for docs.
+      coverage: false
