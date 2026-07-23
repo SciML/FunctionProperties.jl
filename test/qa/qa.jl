@@ -26,6 +26,12 @@ using SciMLTesting, FunctionProperties, JET, Test
 #     method with constant argument types". This dependency is deliberately confined behind a
 #     functional capability probe (`_const_prop_capable`) so the package degrades to the plain
 #     type scan wherever these internals change shape.
+#   - `BitVector` marks which argtypes are `Core.Const`. It is reached through the `Compiler`
+#     module (not `Base`) because on Julia <= 1.11 the compiler bootstraps its own `BitVector`
+#     distinct from `Base.BitVector`, and `InferenceResult` accepts only that compiler-owned one.
+#     `specialize_method` is likewise only reachable via `Compiler` (`Base.specialize_method`
+#     does not exist on 1.10). On 1.12 `Base.which` reports `Base` as their owner, so both are
+#     also ignored in `all_qualified_accesses_via_owners`, not just the public-API check.
 #   - `TwicePrecision` appears only in a constructor disambiguation that Aqua requires: Base
 #     defines `(::Type{T<:Number})(::Base.TwicePrecision)`, which is ambiguous against the
 #     degree tracer's generic constructor.
@@ -35,9 +41,10 @@ run_qa(
     FunctionProperties;
     ei_kwargs = (;
         all_explicit_imports_are_public = (; ignore = (:GotoIfNot,)),
+        all_qualified_accesses_via_owners = (; ignore = (:BitVector, :specialize_method)),
         all_qualified_accesses_are_public = (;
             ignore = (
-                :Typeof, :Argument, :CodeInfo, :Compiler, :Const, :GotoNode,
+                :Typeof, :Argument, :BitVector, :CodeInfo, :Compiler, :Const, :GotoNode,
                 :InferenceResult, :InferenceState, :MethodInstance, :NativeInterpreter,
                 :NewvarNode, :PartialStruct, :ReturnNode, :SSAValue, :SlotNumber, :TwicePrecision,
                 :infer_effects, :is_consistent, :is_effect_free, :mightalias,
